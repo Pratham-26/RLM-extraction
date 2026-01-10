@@ -26,7 +26,7 @@ from rlm.extract.chunker import (
     VALID_PDF_EXTENSION,
     VALID_TEXT_EXTENSIONS,
 )
-from rlm.extract.processor import ChunkProcessor, ExtractionResult as ChunkResult
+from rlm.extract.processor import ChunkProcessor, ChunkProcessingResult as ChunkResult
 from rlm.extract.schema import SchemaConverter
 from rlm.repl import REPLState
 from rlm.signatures import RootExtractionSignature
@@ -411,11 +411,13 @@ class RLMExtractor(dspy.Module):
             elif isinstance(document, list) and document and isinstance(document[0], str):
                 # List of file paths - may include PDFs and images
                 chunks = []
-                for i, path in enumerate(document):
+                next_idx = 0
+                for path in document:
                     file_chunks = self.chunker.chunk_file(path, self.config.pdf_config)
                     # Adjust chunk indices to maintain sequential order
                     for chunk in file_chunks:
-                        chunk.idx = i
+                        chunk.idx = next_idx
+                        next_idx += 1
                     chunks.extend(file_chunks)
                 return chunks
             else:

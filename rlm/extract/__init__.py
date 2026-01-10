@@ -2,7 +2,7 @@
 
 from rlm.extract.chunker import Chunk, Chunker
 from rlm.extract.extractor import ExtractionResult, RLMExtractor
-from rlm.extract.processor import ExtractionResult as ChunkResult
+from rlm.extract.processor import ChunkProcessingResult as ChunkResult
 from rlm.extract.schema import SchemaConverter
 
 __all__ = [

@@ -27,7 +27,7 @@ class RetryConfig:
 
 
 @dataclass
-class ExtractionResult:
+class ChunkProcessingResult:
     """Result from processing a single chunk."""
 
     # Whether extraction succeeded
@@ -109,7 +109,7 @@ class ChunkProcessor:
         chunk: Chunk,
         yaml_schema: str,
         targeted_prompt: str = "",
-    ) -> ExtractionResult:
+    ) -> ChunkProcessingResult:
         """Process a single chunk with retry logic.
 
         Args:
@@ -118,7 +118,7 @@ class ChunkProcessor:
             targeted_prompt: Optional specific instruction for re-extraction
 
         Returns:
-            ExtractionResult with success status and data/error
+            ChunkProcessingResult with success status and data/error
         """
         predictor = self._get_predictor()
 
@@ -139,7 +139,7 @@ class ChunkProcessor:
 
             except TimeoutError as e:
                 if attempt >= self.max_attempts:
-                    return ExtractionResult(
+                    return ChunkProcessingResult(
                         success=False,
                         chunk_idx=chunk.idx,
                         error=f"Timeout after {attempt} attempts: {str(e)}",
@@ -152,7 +152,7 @@ class ChunkProcessor:
                 error_msg = str(e)
 
                 if attempt >= self.max_attempts:
-                    return ExtractionResult(
+                    return ChunkProcessingResult(
                         success=False,
                         chunk_idx=chunk.idx,
                         error=f"Failed after {attempt} attempts: {error_msg}",
@@ -172,7 +172,7 @@ class ChunkProcessor:
                     targeted_prompt = f"Please try again. Previous attempt failed: {error_msg[:100]}"
 
         # Should not reach here
-        return ExtractionResult(
+        return ChunkProcessingResult(
             success=False,
             chunk_idx=chunk.idx,
             error="Unknown error",
@@ -184,8 +184,8 @@ class ChunkProcessor:
         result: dspy.Prediction,
         chunk_idx: int,
         attempts: int,
-    ) -> ExtractionResult:
-        """Parse worker LM result into ExtractionResult."""
+    ) -> ChunkProcessingResult:
+        """Parse worker LM result into ChunkProcessingResult."""
         try:
             # Extract fields from DSPy prediction
             gist = getattr(result, "gist", "")
@@ -203,7 +203,7 @@ class ChunkProcessor:
             if confidence not in ("high", "medium", "low"):
                 confidence = "medium"
 
-            return ExtractionResult(
+            return ChunkProcessingResult(
                 success=True,
                 chunk_idx=chunk_idx,
                 gist=gist or f"Chunk {chunk_idx} processed",
@@ -214,7 +214,7 @@ class ChunkProcessor:
             )
 
         except Exception as e:
-            return ExtractionResult(
+            return ChunkProcessingResult(
                 success=False,
                 chunk_idx=chunk_idx,
                 error=f"Failed to parse worker result: {str(e)}",
@@ -240,29 +240,49 @@ class ChunkProcessor:
                 return {}
 
     def _parse_missing_fields(self, fields_str: str) -> list[str]:
-        """Parse missing fields string into list."""
-        if not fields_str or fields_str.strip() == "[]" or fields_str.strip() == "":
+        """Parse missing fields string into list.
+
+        Handles list format from LLM output (e.g., "['field1', 'field2']")
+        and comma-separated as fallback. Input is sanitized to prevent
+        injection attacks.
+        """
+        # Maximum number of fields to prevent abuse
+        MAX_MISSING_FIELDS = 100
+
+        if not fields_str or fields_str.strip() in ("[]", "", "none", "null"):
             return []
+
+        # Strip common LLM artifacts
+        cleaned = fields_str.strip()
+        for prefix in ("Missing fields:", "missing:", "fields:"):
+            if cleaned.lower().startswith(prefix):
+                cleaned = cleaned[len(prefix):].strip()
 
         try:
             import ast
 
-            result = ast.literal_eval(fields_str)
+            result = ast.literal_eval(cleaned)
             if isinstance(result, list):
-                return [str(f) for f in result]
+                # Limit size and sanitize each field
+                fields = [str(f).strip() for f in result if f]
+                return fields[:MAX_MISSING_FIELDS]
             return []
-        except Exception:
-            # Try comma-separated
-            if "," in fields_str:
-                return [f.strip() for f in fields_str.split(",")]
-            return [fields_str.strip()]
+        except (ValueError, SyntaxError):
+            # Try comma-separated as fallback
+            if "," in cleaned:
+                fields = [f.strip() for f in cleaned.split(",")]
+                # Filter out empty strings and limit
+                return [f for f in fields if f][:MAX_MISSING_FIELDS]
+            # Single field
+            single = cleaned.strip()
+            return [single] if single else []
 
     def process_chunks_parallel(
         self,
         chunks: list[Chunk],
         yaml_schema: str,
         targeted_prompt: str = "",
-    ) -> list[ExtractionResult]:
+    ) -> list[ChunkProcessingResult]:
         """Process multiple chunks in parallel.
 
         Args:
@@ -271,7 +291,7 @@ class ChunkProcessor:
             targeted_prompt: Optional specific instruction (same for all chunks)
 
         Returns:
-            List of ExtractionResult in same order as input chunks
+            List of ChunkProcessingResult in same order as input chunks
         """
         results = [None] * len(chunks)
 
@@ -289,7 +309,7 @@ class ChunkProcessor:
                     result = future.result()
                     results[chunk.idx] = result
                 except Exception as e:
-                    results[chunk.idx] = ExtractionResult(
+                    results[chunk.idx] = ChunkProcessingResult(
                         success=False,
                         chunk_idx=chunk.idx,
                         error=f"Unexpected error: {str(e)}",
@@ -302,7 +322,7 @@ class ChunkProcessor:
         chunks: list[Chunk],
         yaml_schema: str,
         targeted_prompts: dict[int, str] | None = None,
-    ) -> list[ExtractionResult]:
+    ) -> list[ChunkProcessingResult]:
         """Process chunks sequentially with optional targeted prompts.
 
         Args:
@@ -311,7 +331,7 @@ class ChunkProcessor:
             targeted_prompts: Optional dict mapping chunk_idx to specific prompt
 
         Returns:
-            List of ExtractionResult
+            List of ChunkProcessingResult
         """
         results = []
 

@@ -96,7 +96,8 @@ class RLMConfig:
             APIKeyError: If required API keys are not configured
         """
         api_key = self.api_key or _get_api_key_for_model(self.root_model)
-        assert api_key is not None, f"API key for root model ({self.root_model}) cannot be None"
+        if api_key is None:
+            raise ValueError(f"API key for root model ({self.root_model}) must be provided")
 
         # Configure root LM (orchestrator)
         self._root_lm = dspy.LM(
@@ -108,7 +109,8 @@ class RLMConfig:
 
         # Configure worker LMs
         text_key = self.api_key or _get_api_key_for_model(self.worker_text_model)
-        assert text_key is not None, f"API key for text worker ({self.worker_text_model}) cannot be None"
+        if text_key is None:
+            raise ValueError(f"API key for text worker ({self.worker_text_model}) must be provided")
         self._worker_text_lm = dspy.LM(
             self.worker_text_model,
             api_key=text_key,
@@ -117,7 +119,8 @@ class RLMConfig:
         )
 
         vision_key = self.api_key or _get_api_key_for_model(self.worker_vision_model)
-        assert vision_key is not None, f"API key for vision worker ({self.worker_vision_model}) cannot be None"
+        if vision_key is None:
+            raise ValueError(f"API key for vision worker ({self.worker_vision_model}) must be provided")
         self._worker_vision_lm = dspy.LM(
             self.worker_vision_model,
             api_key=vision_key,
