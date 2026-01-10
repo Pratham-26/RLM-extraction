@@ -10,6 +10,26 @@ load_dotenv()
 
 
 @dataclass
+class PDFConfig:
+    """Configuration for PDF to image conversion."""
+
+    # DPI for rendering (higher = better quality, larger images)
+    dpi: int = 200
+
+    # Page range: None = all pages, (start, end) for range, [n1, n2, ...] for specific pages
+    page_range: tuple[int, int] | list[int] | None = None
+
+    # Only process the first page
+    first_page_only: bool = False
+
+    # Image format for output (png, jpeg, etc.)
+    fmt: str = "png"
+
+    # Thread count for parallel conversion
+    thread_count: int = 1
+
+
+@dataclass
 class RLMConfig:
     """Configuration for RLM Schema Extraction.
 
@@ -19,43 +39,50 @@ class RLMConfig:
     """
 
     # Model configuration
+    # Model for orchestration (always text-based)
     root_model: str
-    """Model for orchestration (always text-based)."""
 
+    # Model for text document extraction
     worker_text_model: str
-    """Model for text document extraction."""
 
+    # Model for image document extraction (must be vision-capable)
     worker_vision_model: str
-    """Model for image document extraction (must be vision-capable)."""
 
     # Chunking
+    # Characters per text chunk (splits at nearest space)
     chunk_size: int = 2000
-    """Characters per text chunk (splits at nearest space)."""
 
     # Worker behavior
+    # Detail level of chunk gists
     summary_level: Literal["minimal", "standard", "verbose"] = "standard"
-    """Detail level of chunk gists."""
 
     # Parallelism control
+    # Use parallel processing for initial extraction pass
     parallel_first_pass: bool = True
-    """Use parallel processing for initial extraction pass."""
 
+    # Use parallel processing for re-extraction retries
     parallel_retry: bool = False
-    """Use parallel processing for re-extraction retries."""
 
+    # Maximum concurrent API calls
     max_parallel_workers: int = 5
-    """Maximum concurrent API calls."""
 
     # Execution limits
+    # Maximum RLM orchestration turns
     max_turns: int = 20
-    """Maximum RLM orchestration turns."""
 
+    # Seconds before code execution timeout
     code_execution_timeout: int = 30
-    """Seconds before code execution timeout."""
+
+    # User context limits
+    # Maximum characters allowed in user_context parameter
+    max_user_context_chars: int = 10_000  # ~2,500 tokens
 
     # API configuration
+    # API key (uses env var if not provided)
     api_key: str | None = None
-    """API key (uses env var if not provided)."""
+
+    # PDF to image conversion settings
+    pdf_config: PDFConfig = field(default_factory=PDFConfig)
 
     # Internal state (filled by configure_dspy)
     _root_lm: dspy.LM = field(init=False, repr=False)
@@ -63,8 +90,13 @@ class RLMConfig:
     _worker_vision_lm: dspy.LM = field(init=False, repr=False)
 
     def configure_dspy(self) -> None:
-        """Configure DSPy with the root LM as default."""
+        """Configure DSPy with the root LM as default.
+
+        Raises:
+            APIKeyError: If required API keys are not configured
+        """
         api_key = self.api_key or _get_api_key_for_model(self.root_model)
+        assert api_key is not None, f"API key for root model ({self.root_model}) cannot be None"
 
         # Configure root LM (orchestrator)
         self._root_lm = dspy.LM(
@@ -76,6 +108,7 @@ class RLMConfig:
 
         # Configure worker LMs
         text_key = self.api_key or _get_api_key_for_model(self.worker_text_model)
+        assert text_key is not None, f"API key for text worker ({self.worker_text_model}) cannot be None"
         self._worker_text_lm = dspy.LM(
             self.worker_text_model,
             api_key=text_key,
@@ -84,6 +117,7 @@ class RLMConfig:
         )
 
         vision_key = self.api_key or _get_api_key_for_model(self.worker_vision_model)
+        assert vision_key is not None, f"API key for vision worker ({self.worker_vision_model}) cannot be None"
         self._worker_vision_lm = dspy.LM(
             self.worker_vision_model,
             api_key=vision_key,
@@ -95,13 +129,24 @@ class RLMConfig:
         dspy.configure(lm=self._root_lm, track_usage=True)
 
     def get_root_lm(self) -> dspy.LM:
-        """Get the root LM instance."""
+        """Get the root LM instance.
+
+        Returns:
+            Configured root LM for orchestration
+        """
         if not hasattr(self, "_root_lm"):
             self.configure_dspy()
         return self._root_lm
 
     def get_worker_lm(self, modality: Literal["text", "vision"]) -> dspy.LM:
-        """Get the appropriate worker LM for the input modality."""
+        """Get the appropriate worker LM for the input modality.
+
+        Args:
+            modality: Either "text" or "vision"
+
+        Returns:
+            Configured worker LM for the specified modality
+        """
         if not hasattr(self, "_worker_text_lm"):
             self.configure_dspy()
 
@@ -110,33 +155,59 @@ class RLMConfig:
         return self._worker_vision_lm
 
 
+class APIKeyError(ValueError):
+    """Raised when a required API key is not configured."""
+
+    def __init__(self, provider: str, env_var: str):
+        self.provider = provider
+        self.env_var = env_var
+        super().__init__(
+            f"{provider} API key not found. "
+            f"Please set the {env_var} environment variable."
+        )
+
+
 def _get_api_key_for_model(model: str) -> str:
-    """Get the appropriate API key for a given model."""
+    """Get the appropriate API key for a given model.
+
+    Raises:
+        APIKeyError: If the required API key is not found in environment.
+    """
+    import os
+
     model_lower = model.lower()
 
     if "openai" in model_lower or model_lower.startswith("gpt"):
-        import os
-
-        return os.getenv("OPENAI_API_KEY", "")
+        key = os.getenv("OPENAI_API_KEY")
+        if not key:
+            raise APIKeyError("OpenAI", "OPENAI_API_KEY")
+        return key
     elif "anthropic" in model_lower or "claude" in model_lower:
-        import os
-
-        return os.getenv("ANTHROPIC_API_KEY", "")
+        key = os.getenv("ANTHROPIC_API_KEY")
+        if not key:
+            raise APIKeyError("Anthropic", "ANTHROPIC_API_KEY")
+        return key
     elif "openrouter" in model_lower:
-        import os
-
-        return os.getenv("OPENROUTER_API_KEY", "")
+        key = os.getenv("OPENROUTER_API_KEY")
+        if not key:
+            raise APIKeyError("OpenRouter", "OPENROUTER_API_KEY")
+        return key
 
     # Default to OPENAI_API_KEY
-    import os
-
-    return os.getenv("OPENAI_API_KEY", "")
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        raise APIKeyError("OpenAI (default)", "OPENAI_API_KEY")
+    return key
 
 
 # Preset configurations
 
 def openai_config() -> RLMConfig:
-    """Pre-configured RLM for OpenAI models."""
+    """Pre-configured RLM for OpenAI models.
+
+    Returns:
+        RLMConfig configured with GPT-4o models
+    """
     return RLMConfig(
         root_model="openai/gpt-4o",
         worker_text_model="openai/gpt-4o-mini",
@@ -145,7 +216,11 @@ def openai_config() -> RLMConfig:
 
 
 def anthropic_config() -> RLMConfig:
-    """Pre-configured RLM for Anthropic models."""
+    """Pre-configured RLM for Anthropic models.
+
+    Returns:
+        RLMConfig configured with Claude models
+    """
     return RLMConfig(
         root_model="anthropic/claude-sonnet-4",
         worker_text_model="anthropic/claude-haiku-4",
@@ -154,7 +229,11 @@ def anthropic_config() -> RLMConfig:
 
 
 def cost_optimized_config() -> RLMConfig:
-    """Pre-configured RLM for cost optimization."""
+    """Pre-configured RLM for cost optimization.
+
+    Returns:
+        RLMConfig configured for minimal cost
+    """
     return RLMConfig(
         root_model="anthropic/claude-haiku-4",
         worker_text_model="anthropic/claude-haiku-4",
@@ -163,7 +242,11 @@ def cost_optimized_config() -> RLMConfig:
 
 
 def quality_config() -> RLMConfig:
-    """Pre-configured RLM for maximum quality."""
+    """Pre-configured RLM for maximum quality.
+
+    Returns:
+        RLMConfig configured for highest extraction quality
+    """
     return RLMConfig(
         root_model="anthropic/claude-sonnet-4",
         worker_text_model="openai/gpt-4o",

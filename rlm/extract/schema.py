@@ -7,11 +7,15 @@ Uses pyyaml for all conversions - no LLM calls.
 
 import base64
 import io
+import logging
 import re
 from typing import Any
 
 import yaml
 from PIL import Image
+
+
+logger = logging.getLogger(__name__)
 
 
 class SchemaConverter:
@@ -135,12 +139,24 @@ class SchemaConverter:
 
         Returns:
             Dict matching the JSON Schema structure
+
+        Raises:
+            ValueError: If YAML parsing fails and data would be lost
         """
         try:
             data = yaml.safe_load(extracted_yaml)
         except yaml.YAMLError as e:
             # Try to fix common YAML issues
             data = self._fix_and_parse_yaml(extracted_yaml)
+
+            # If we still have empty data but input had content, that's a problem
+            if data == {} and extracted_yaml.strip():
+                raise ValueError(
+                    f"Failed to parse extracted YAML. The LLM may have returned "
+                    f"invalid YAML that could not be corrected. "
+                    f"Original error: {e}. "
+                    f"YAML preview (first 200 chars): {extracted_yaml[:200]!r}"
+                ) from e
 
         if not isinstance(data, dict):
             data = {"value": data}
@@ -161,8 +177,15 @@ class SchemaConverter:
 
         try:
             return yaml.safe_load(fixed)
-        except yaml.YAMLError:
-            # Last resort: return empty dict
+        except yaml.YAMLError as e:
+            # Log the failure with context for debugging
+            preview = yaml_str[:200] if len(yaml_str) > 200 else yaml_str
+            logger.warning(
+                f"Failed to parse YAML after attempted fixes. "
+                f"Returning empty dict. Error: {e}. "
+                f"YAML preview: {preview!r}"
+            )
+            # Return empty dict for graceful degradation
             return {}
 
     def _apply_schema_types(self, data: dict, schema: dict) -> dict:
@@ -186,9 +209,21 @@ class SchemaConverter:
             elif prop_type == "string":
                 result[key] = str(value)
             elif prop_type == "integer":
-                result[key] = int(float(value)) if value else 0
+                if value is None or value == "":
+                    result[key] = None
+                else:
+                    try:
+                        result[key] = int(float(value))
+                    except (ValueError, TypeError):
+                        result[key] = None
             elif prop_type == "number":
-                result[key] = float(value) if value else 0.0
+                if value is None or value == "":
+                    result[key] = None
+                else:
+                    try:
+                        result[key] = float(value)
+                    except (ValueError, TypeError):
+                        result[key] = None
             elif prop_type == "boolean":
                 if isinstance(value, str):
                     result[key] = value.lower() in ("true", "yes", "1")

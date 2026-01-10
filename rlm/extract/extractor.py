@@ -9,6 +9,8 @@ Coordinates the entire extraction process:
 """
 
 import json
+import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Union
@@ -17,31 +19,41 @@ import dspy
 from PIL import Image
 
 from rlm.config import RLMConfig
-from rlm.extract.chunker import Chunker
+from rlm.extract.chunker import (
+    ALL_SUPPORTED_EXTENSIONS,
+    Chunk,
+    Chunker,
+    VALID_PDF_EXTENSION,
+    VALID_TEXT_EXTENSIONS,
+)
 from rlm.extract.processor import ChunkProcessor, ExtractionResult as ChunkResult
 from rlm.extract.schema import SchemaConverter
 from rlm.repl import REPLState
 from rlm.signatures import RootExtractionSignature
 
 
+# Constants for user_context validation
+MIN_USER_CONTEXT_CHARS = 10
+
+
 @dataclass
 class ExtractionResult:
     """Result of RLM schema extraction."""
 
+    # Final extracted data matching the input JSON Schema
     data: dict
-    """Final extracted data matching the input JSON Schema."""
 
+    # Summary of each chunk: [{idx, gist, confidence, fields_found}]
     chunk_gists: list[dict] = field(default_factory=list)
-    """Summary of each chunk: [{idx, gist, confidence, fields_found}]."""
 
+    # Failed chunks: [{chunk_idx, error, content_preview}]
     failures: list[dict] = field(default_factory=list)
-    """Failed chunks: [{chunk_idx, error, content_preview}]."""
 
+    # Total number of RLM orchestration turns
     turns: int = 0
-    """Total number of RLM orchestration turns."""
 
+    # Token consumption: {root: int, worker: int, total: int}
     token_usage: dict = field(default_factory=dict)
-    """Token consumption: {root: int, worker: int, total: int}."""
 
     def is_complete(self) -> bool:
         """True if extraction has no failures."""
@@ -97,17 +109,28 @@ class RLMExtractor(dspy.Module):
         json_schema: dict,
         document: Union[str, list[Image.Image], list[str]],
         task: str | None = None,
+        user_context: str | None = None,
     ) -> ExtractionResult:
         """Extract structured data from a document according to JSON Schema.
 
         Args:
             json_schema: JSON Schema defining what to extract
-            document: Text string, list of PIL Images, or list of image paths
+            document: Text string, list of PIL Images, or list of file paths.
+                File paths can be .txt, .md, .pdf, or image files (.png, .jpg, etc.)
             task: Optional custom task description
+            user_context: Optional user-provided context and instructions.
+                The Root LM will condense this into extraction guidance for workers.
 
         Returns:
             ExtractionResult with data, gists, failures, and usage
+
+        Raises:
+            ValueError: If inputs are invalid
+            TypeError: If document types are incorrect
         """
+        # Validate inputs
+        self._validate_inputs(json_schema, document)
+
         # Detect input modality
         modality = self._detect_modality(document)
 
@@ -127,10 +150,22 @@ class RLMExtractor(dspy.Module):
         )
         self.repl.set_total_chunks(len(chunks))
 
+        # Store JSON schema for field tracking
+        self.repl.set_json_schema(json_schema)
+
+        # Condense user context if provided
+        condensed_guidance = ""
+        if user_context:
+            self._validate_user_context(user_context)
+            sanitized_context = self._sanitize_user_context(user_context)
+            condensed_guidance = self._condense_user_context(sanitized_context, yaml_schema)
+            self.repl.set_condensed_guidance(condensed_guidance)
+
         # Create chunk processor
         processor = ChunkProcessor(
             worker_lm=worker_lm,
             max_parallel_workers=self.config.max_parallel_workers,
+            condensed_guidance=condensed_guidance,
         )
 
         # Set default task
@@ -181,9 +216,173 @@ class RLMExtractor(dspy.Module):
             token_usage=usage,
         )
 
+    def _validate_inputs(
+        self,
+        json_schema: dict,
+        document: Union[str, list[Image.Image], list[str]],
+    ) -> None:
+        """Validate input parameters.
+
+        Raises:
+            ValueError: If inputs are invalid
+            TypeError: If document types are incorrect
+        """
+        # Validate json_schema
+        if json_schema is None:
+            raise ValueError("json_schema cannot be None")
+        if not isinstance(json_schema, dict):
+            raise TypeError(f"json_schema must be a dict, got {type(json_schema).__name__}")
+        if not json_schema:
+            raise ValueError("json_schema cannot be empty")
+        if "type" not in json_schema:
+            raise ValueError("json_schema must have a 'type' field (e.g., 'type': 'object')")
+
+        # Validate document
+        if document is None:
+            raise ValueError("document cannot be None")
+
+        if isinstance(document, str):
+            # File paths are allowed, so only check if it's empty content (not a file)
+            if not document.strip():
+                raise ValueError("document string cannot be empty")
+            # If it looks like a file path but doesn't exist, that's an error
+            if os.path.exists(document) or os.path.exists(os.path.abspath(document)):
+                # File exists - validate extension
+                abs_path = os.path.abspath(document)
+                ext = os.path.splitext(abs_path)[1].lower()
+                if ext not in ALL_SUPPORTED_EXTENSIONS:
+                    raise ValueError(
+                        f"Unsupported file type: {ext}. "
+                        f"Supported: {', '.join(sorted(ALL_SUPPORTED_EXTENSIONS))}"
+                    )
+        elif isinstance(document, list):
+            if len(document) == 0:
+                raise ValueError("document list cannot be empty")
+
+            # Validate list element types
+            first = document[0]
+            if not isinstance(first, (Image.Image, str)):
+                raise TypeError(
+                    f"document list must contain PIL.Image or str (image paths), "
+                    f"got {type(first).__name__}"
+                )
+
+            # Check all elements are same type
+            for i, item in enumerate(document):
+                if type(item) is not type(first):
+                    raise TypeError(
+                        f"document list must contain consistent types; "
+                        f"element 0 is {type(first).__name__} but element {i} is {type(item).__name__}"
+                    )
+        else:
+            raise TypeError(
+                f"document must be str, list[PIL.Image], or list[str], "
+                f"got {type(document).__name__}"
+            )
+
+    def _validate_user_context(self, user_context: str) -> None:
+        """Validate user_context parameter.
+
+        Args:
+            user_context: User-provided context string
+
+        Raises:
+            TypeError: If user_context is not a string
+            ValueError: If user_context is empty, too short, or too long
+        """
+        if not isinstance(user_context, str):
+            raise TypeError(
+                f"user_context must be a string, got {type(user_context).__name__}"
+            )
+
+        if len(user_context) == 0:
+            raise ValueError("user_context cannot be empty")
+
+        if len(user_context) < MIN_USER_CONTEXT_CHARS:
+            raise ValueError(
+                f"user_context is too short ({len(user_context)} chars). "
+                f"Minimum: {MIN_USER_CONTEXT_CHARS} chars. "
+                f"If you don't need additional context, omit the parameter."
+            )
+
+        max_chars = self.config.max_user_context_chars
+        if len(user_context) > max_chars:
+            raise ValueError(
+                f"user_context is too long ({len(user_context)} chars). "
+                f"Maximum: {max_chars:,} chars. "
+                f"You can increase this by setting max_user_context_chars in RLMConfig."
+            )
+
+    def _sanitize_user_context(self, user_context: str) -> str:
+        """Sanitize user context to reduce injection risk.
+
+        Args:
+            user_context: Raw user-provided context
+
+        Returns:
+            Sanitized context string
+        """
+        # Remove control characters except newlines and tabs
+        sanitized = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', user_context)
+        # Limit repeated newlines (max 2 consecutive)
+        sanitized = re.sub(r'\n{3,}', '\n\n', sanitized)
+        return sanitized.strip()
+
+    def _condense_user_context(self, user_context: str, yaml_schema: str) -> str:
+        """Have Root LM condense user context into extraction guidance.
+
+        Args:
+            user_context: User-provided context and instructions
+            yaml_schema: YAML schema for extraction
+
+        Returns:
+            Condensed guidance (2-4 sentences) for Worker LMs
+        """
+        from rlm.signatures import ContextCondensationSignature
+
+        condenser = dspy.Predict(ContextCondensationSignature)
+
+        with dspy.context(lm=self.config.get_root_lm()):
+            result = condenser(user_context=user_context, yaml_schema=yaml_schema)
+
+        return getattr(result, "condensed_guidance", "")
+
+    def _is_file_path(self, document: str) -> bool:
+        """Check if a string is a file path vs. document content.
+
+        Args:
+            document: String to check
+
+        Returns:
+            True if the string appears to be a valid file path
+        """
+        if not document or len(document) > 1024:
+            # Reasonable path length limit
+            return False
+
+        # Check if file exists
+        if os.path.exists(document):
+            return True
+
+        # Check if absolute path exists
+        abs_path = os.path.abspath(document)
+        if os.path.exists(abs_path):
+            return True
+
+        return False
+
     def _detect_modality(self, document) -> str:
         """Determine if we need vision workers."""
         if isinstance(document, str):
+            # Check if it's a file path
+            if self._is_file_path(document):
+                ext = os.path.splitext(document)[1].lower()
+                if ext in VALID_TEXT_EXTENSIONS:
+                    return "text"
+                elif ext in VALID_PDF_EXTENSION:
+                    return "vision"
+                # Unknown extension - default to text, will fail later if invalid
+                return "text"
             return "text"
         elif isinstance(document, list):
             if document and isinstance(document[0], Image.Image):
@@ -200,12 +399,25 @@ class RLMExtractor(dspy.Module):
     ) -> list:
         """Chunk the document for processing."""
         if modality == "text":
+            # Check if it's a text file path
+            if isinstance(document, str) and self._is_file_path(document):
+                return self.chunker.chunk_file(document, self.config.pdf_config)
             return self.chunker.chunk_text(document)
         else:
-            # Convert to list of Images if needed
-            if isinstance(document, list) and document and isinstance(document[0], str):
-                # Image paths - load them
-                return self.chunker.chunk_image_files(document)
+            # Vision modality - could be images, PDF, or image paths
+            if isinstance(document, str) and self._is_file_path(document):
+                # Single file path (PDF or image)
+                return self.chunker.chunk_file(document, self.config.pdf_config)
+            elif isinstance(document, list) and document and isinstance(document[0], str):
+                # List of file paths - may include PDFs and images
+                chunks = []
+                for i, path in enumerate(document):
+                    file_chunks = self.chunker.chunk_file(path, self.config.pdf_config)
+                    # Adjust chunk indices to maintain sequential order
+                    for chunk in file_chunks:
+                        chunk.idx = i
+                    chunks.extend(file_chunks)
+                return chunks
             else:
                 # Already PIL Images
                 return self.chunker.encode_images(document)
@@ -223,7 +435,7 @@ class RLMExtractor(dspy.Module):
                     gist=result.gist or "",
                     extracted=result.extracted,
                     confidence=result.confidence,
-                    fields_found=result.missing_fields or [],
+                    fields_found=list(result.extracted.keys()),
                 )
             elif not result.success:
                 # Mark as failed
@@ -252,14 +464,17 @@ class RLMExtractor(dspy.Module):
     def _process_root_decision(
         self,
         task: str,
-        trajectory: list,
+        trajectory: list[dict],
         yaml_schema: str,
         processor: ChunkProcessor,
-        chunks: list,
+        chunks: list[Chunk],
     ) -> str:
         """Process Root LM decision for next action."""
         # Format trajectory for Root LM
         trajectory_str = self._format_trajectory(trajectory)
+
+        # Get field completion summary
+        field_completion = self.repl.get_field_completion_summary()
 
         # Call Root LM
         with dspy.context(lm=self.config.get_root_lm()):
@@ -269,6 +484,7 @@ class RLMExtractor(dspy.Module):
                 state_summary=self.repl.get_state_summary(),
                 chunk_summaries=self.repl.get_chunk_summaries_preview(),
                 results_preview=self.repl.get_results_preview(),
+                field_completion=field_completion,
             )
 
         # Parse action
@@ -327,7 +543,7 @@ class RLMExtractor(dspy.Module):
             match = re.search(r"\d+", str(target_str))
             return int(match.group()) if match else None
 
-    def _compile_failures(self, chunks: list) -> list[dict]:
+    def _compile_failures(self, chunks: list[Chunk]) -> list[dict]:
         """Compile failure information."""
         failures = []
         for idx, error in self.repl.failed_chunks.items():

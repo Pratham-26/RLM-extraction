@@ -7,6 +7,27 @@ Defines the input/output contracts for Root LM (orchestrator) and Worker LM
 import dspy
 
 
+class ContextCondensationSignature(dspy.Signature):
+    """Condense user-provided context into extraction guidance.
+
+    The Root LM uses this to transform verbose user context into concise,
+    actionable guidance for Worker LMs. Focus on critical instructions and
+    domain-specific information that workers need."""
+
+    user_context = dspy.InputField(
+        desc="User-provided context and instructions for extraction"
+    )
+    yaml_schema = dspy.InputField(
+        desc="YAML schema defining extraction targets"
+    )
+
+    condensed_guidance = dspy.OutputField(
+        desc="Concise extraction guidance (2-4 sentences) "
+             "highlighting critical instructions, domain-specific terms, "
+             "and formatting requirements for workers"
+    )
+
+
 class RootExtractionSignature(dspy.Signature):
     """You are orchestrating schema extraction from a document.
 
@@ -30,6 +51,11 @@ Prioritize re-extraction for: required fields, high-value data, conflicting info
     )
     results_preview = dspy.InputField(
         desc="Preview of extraction results so far"
+    )
+    field_completion = dspy.InputField(
+        desc="Field completion status: which required fields are found/missing. "
+             "Use this to prioritize re-extraction for missing required fields.",
+        default=""
     )
 
     thought = dspy.OutputField(
@@ -60,6 +86,10 @@ Provide a brief gist summarizing what this chunk contains."""
     )
     chunk_idx = dspy.InputField(
         desc="Index of this chunk for reference"
+    )
+    condensed_guidance = dspy.InputField(
+        desc="Condensed user guidance for extraction - follow these instructions",
+        default=""
     )
     targeted_prompt = dspy.InputField(
         desc="Optional specific instruction - empty for first pass",

@@ -14,33 +14,45 @@ import dspy
 from rlm.extract.chunker import Chunk
 
 
+# Retry configuration constants
+class RetryConfig:
+    # Base delay for exponential backoff (seconds)
+    BASE_DELAY: float = 1.0
+
+    # Maximum delay between retries (seconds)
+    MAX_DELAY: float = 10.0
+
+    # Backoff multiplier for exponential increase
+    BACKOFF_MULTIPLIER: float = 2.0
+
+
 @dataclass
 class ExtractionResult:
     """Result from processing a single chunk."""
 
+    # Whether extraction succeeded
     success: bool
-    """Whether extraction succeeded."""
 
+    # Index of the processed chunk
     chunk_idx: int
-    """Index of the processed chunk."""
 
+    # Summary of chunk content
     gist: str | None = None
-    """Summary of chunk content."""
 
+    # Extracted data from this chunk
     extracted: dict | None = None
-    """Extracted data from this chunk."""
 
+    # Confidence level: high/medium/low
     confidence: str = "medium"
-    """Confidence level: high/medium/low."""
 
+    # Schema fields not found in this chunk
     missing_fields: list[str] | None = None
-    """Schema fields not found in this chunk."""
 
+    # Error message if extraction failed
     error: str | None = None
-    """Error message if extraction failed."""
 
+    # Number of attempts made
     attempts: int = 1
-    """Number of attempts made."""
 
 
 class ChunkProcessor:
@@ -51,6 +63,7 @@ class ChunkProcessor:
         worker_lm: dspy.LM,
         max_parallel_workers: int = 5,
         max_attempts: int = 2,
+        condensed_guidance: str = "",
     ):
         """Initialize processor.
 
@@ -58,10 +71,12 @@ class ChunkProcessor:
             worker_lm: Worker LM for extraction
             max_parallel_workers: Maximum concurrent extractions
             max_attempts: Maximum retry attempts (default 2 = initial + 1 retry)
+            condensed_guidance: Condensed user guidance for workers
         """
         self.worker_lm = worker_lm
         self.max_parallel_workers = max_parallel_workers
         self.max_attempts = max_attempts
+        self.condensed_guidance = condensed_guidance
 
         # Create DSPy predictor for worker
         self._worker_predictor = None
@@ -73,6 +88,21 @@ class ChunkProcessor:
 
             self._worker_predictor = dspy.Predict(WorkerExtractionSignature)
         return self._worker_predictor
+
+    def _calculate_backoff(self, attempt: int) -> float:
+        """Calculate exponential backoff delay for a given attempt.
+
+        Args:
+            attempt: The attempt number (1-indexed)
+
+        Returns:
+            Delay in seconds, capped at MAX_DELAY
+        """
+        # Calculate exponential backoff: base * (multiplier ^ (attempt - 1))
+        delay = RetryConfig.BASE_DELAY * (
+            RetryConfig.BACKOFF_MULTIPLIER ** (attempt - 1)
+        )
+        return min(delay, RetryConfig.MAX_DELAY)
 
     def process_chunk(
         self,
@@ -100,6 +130,7 @@ class ChunkProcessor:
                         yaml_schema=yaml_schema,
                         chunk_content=chunk.content,
                         chunk_idx=str(chunk.idx),
+                        condensed_guidance=self.condensed_guidance,
                         targeted_prompt=targeted_prompt,
                     )
 
@@ -114,7 +145,8 @@ class ChunkProcessor:
                         error=f"Timeout after {attempt} attempts: {str(e)}",
                         attempts=attempt,
                     )
-                # Retry for timeout without modifying prompt
+                # Apply exponential backoff before retry
+                time.sleep(self._calculate_backoff(attempt))
 
             except Exception as e:
                 error_msg = str(e)
@@ -126,6 +158,9 @@ class ChunkProcessor:
                         error=f"Failed after {attempt} attempts: {error_msg}",
                         attempts=attempt,
                     )
+
+                # Apply exponential backoff before retry
+                time.sleep(self._calculate_backoff(attempt))
 
                 # Modify prompt for retry
                 if "yaml" in error_msg.lower() or "parse" in error_msg.lower():

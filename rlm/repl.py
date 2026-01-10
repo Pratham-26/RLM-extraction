@@ -20,32 +20,48 @@ class REPLState:
     """
 
     # The document (never seen in full by Root LM)
+    # Document as string (text mode) or list of base64 images (image mode)
     INPUT: Union[str, list[str]] = ""
-    """Document as string (text mode) or list of base64 images (image mode)."""
 
     # Chunk tracking
+    # Total number of chunks in the document
     total_chunks: int = 0
-    """Total number of chunks in the document."""
 
+    # Indices of chunks that have been processed successfully
     completed_chunks: set[int] = field(default_factory=set)
-    """Indices of chunks that have been processed successfully."""
 
+    # {chunk_idx: error_message} for failed chunks
     failed_chunks: dict[int, str] = field(default_factory=dict)
-    """{chunk_idx: error_message} for failed chunks."""
 
     # What Root LM sees (not raw INPUT)
+    # [{idx, gist, confidence, fields_found}] for each processed chunk
     chunk_summaries: list[dict] = field(default_factory=list)
-    """[{idx, gist, confidence, fields_found}] for each processed chunk."""
 
+    # Accumulated extracted data in YAML/merged format
     results_so_far: dict = field(default_factory=dict)
-    """Accumulated extracted data in YAML/merged format."""
 
     # Configuration
+    # Full YAML schema for workers (not seen by Root LM in raw form)
     yaml_schema: str = ""
-    """Full YAML schema for workers (not seen by Root LM in raw form)."""
 
+    # Detail level for gists: minimal/standard/verbose
     summary_level: str = "standard"
-    """Detail level for gists: minimal/standard/verbose."""
+
+    # Condensed user guidance for workers (produced by Root LM from user_context)
+    condensed_guidance: str = ""
+
+    # Field tracking across all chunks
+    # Original JSON Schema (stored to identify required fields)
+    json_schema: dict = field(default_factory=dict)
+
+    # All schema field names found across all chunks
+    fields_found_all: set[str] = field(default_factory=set)
+
+    # Required fields from the JSON Schema
+    required_fields: set[str] = field(default_factory=set)
+
+    # Required fields that have been found
+    required_fields_found: set[str] = field(default_factory=set)
 
     def get_pending_chunks(self) -> list[int]:
         """Return indices of chunks not yet processed."""
@@ -75,6 +91,10 @@ class REPLState:
             fields_found: List of schema fields found in this chunk
         """
         self.completed_chunks.add(idx)
+
+        # Track fields found
+        if fields_found:
+            self.update_fields_found(fields_found)
 
         # Store summary for Root LM
         self.chunk_summaries.append(
@@ -192,6 +212,115 @@ class REPLState:
         self.chunk_summaries.clear()
         self.results_so_far.clear()
 
+        # Clear field tracking for new task
+        self.fields_found_all.clear()
+        self.required_fields_found.clear()
+        # Note: json_schema and required_fields persist until explicitly set
+
     def set_total_chunks(self, count: int) -> None:
         """Set the total number of chunks (for text mode)."""
         self.total_chunks = count
+
+    def set_condensed_guidance(self, guidance: str) -> None:
+        """Set the condensed user guidance for workers.
+
+        Args:
+            guidance: Condensed extraction guidance from Root LM
+        """
+        self.condensed_guidance = guidance
+
+    def set_json_schema(self, json_schema: dict) -> None:
+        """Store the original JSON Schema and extract required fields.
+
+        Args:
+            json_schema: Original JSON Schema dict
+        """
+        self.json_schema = json_schema
+        self.required_fields.clear()  # Clear previous required fields
+        self._extract_required_fields(json_schema)
+
+    def _extract_required_fields(self, schema: dict, prefix: str = "") -> None:
+        """Extract required field names from JSON Schema.
+
+        Handles nested objects by building dot-notation paths.
+
+        Args:
+            schema: JSON Schema dict
+            prefix: Current path prefix for nested fields
+        """
+        if not isinstance(schema, dict):
+            return
+
+        schema_type = schema.get("type")
+        if schema_type != "object":
+            return
+
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+
+        # Track required fields at this level
+        for prop_name in required:
+            if prop_name in properties:
+                full_name = f"{prefix}.{prop_name}" if prefix else prop_name
+                self.required_fields.add(full_name)
+
+        # Recursively handle nested objects
+        for prop_name, prop_schema in properties.items():
+            if not isinstance(prop_schema, dict):
+                continue
+
+            full_name = f"{prefix}.{prop_name}" if prefix else prop_name
+
+            if prop_schema.get("type") == "object":
+                self._extract_required_fields(prop_schema, full_name)
+            elif prop_schema.get("type") == "array":
+                items = prop_schema.get("items", {})
+                if isinstance(items, dict) and items.get("type") == "object":
+                    # For arrays of objects, track with [] notation
+                    self._extract_required_fields(items, f"{full_name}[]")
+
+    def update_fields_found(self, fields_found: list[str]) -> None:
+        """Update the aggregate set of fields found across all chunks.
+
+        Args:
+            fields_found: List of field names found in a chunk
+        """
+        for field in fields_found:
+            self.fields_found_all.add(field)
+            # Also track if this is a required field
+            if field in self.required_fields:
+                self.required_fields_found.add(field)
+
+    def get_missing_required_fields(self) -> list[str]:
+        """Return list of required fields not yet found.
+
+        Returns:
+            Sorted list of missing required field names
+        """
+        missing = self.required_fields - self.required_fields_found
+        return sorted(list(missing))
+
+    def get_field_completion_summary(self) -> str:
+        """Return a formatted summary of field completion for Root LM.
+
+        Returns:
+            String describing field completion status
+        """
+        if not self.required_fields:
+            # No required fields defined
+            found_count = len(self.fields_found_all)
+            return f"Fields found: {found_count}"
+
+        required_total = len(self.required_fields)
+        required_found = len(self.required_fields_found)
+        required_missing = required_total - required_found
+
+        parts = [f"Required fields: {required_found}/{required_total} found"]
+
+        if required_missing > 0:
+            missing = self.get_missing_required_fields()
+            parts.append(f"Missing required: {', '.join(missing[:5])}")
+            if len(missing) > 5:
+                parts.append(f"... and {len(missing) - 5} more")
+
+        return ". ".join(parts) + "."
