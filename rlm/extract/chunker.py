@@ -3,8 +3,14 @@
 Handles:
 - Text documents: Fixed-size slices at nearest space
 - Images: Convert to base64 encoded strings
+
+Uses the Strategy pattern for extensibility - different chunking strategies
+can be added by implementing the ChunkingStrategy ABC.
 """
 
+from __future__ import annotations
+
+import abc
 import base64
 import io
 import os
@@ -31,39 +37,45 @@ ALL_SUPPORTED_EXTENSIONS = (
 )
 
 # Chunking constants
-# Maximum characters to search backward for a word boundary
+# Maximum characters to search backward for a word boundary.
+# Set to 100 as a balance between finding clean breaks and limiting search overhead.
+# Most sentences have spaces well within this range, so this avoids splitting words
+# in the middle while maintaining reasonable performance.
 MAX_WORD_BOUNDARY_SEARCH = 100
 
 
-@dataclass
-class Chunk:
-    """A single chunk of a document."""
+class ChunkingStrategy(abc.ABC):
+    """Abstract base class for chunking strategies.
 
-    # Chunk index
-    idx: int
+    Subclasses implement specific chunking behaviors for different document types.
+    """
 
-    # Chunk content (text or base64 image)
-    content: str
-
-    # Start position in original document (text mode only)
-    start: int | None = None
-
-    # End position in original document (text mode only)
-    end: int | None = None
-
-
-class Chunker:
-    """Split documents into processable chunks for RLM extraction."""
-
-    def __init__(self, chunk_size: int = 2000):
-        """Initialize chunker.
+    @abc.abstractmethod
+    def chunk(self, input_data, **kwargs) -> list[Chunk]:
+        """Chunk the input data into a list of Chunks.
 
         Args:
-            chunk_size: Target characters per text chunk (splits at nearest space)
+            input_data: The data to chunk (type depends on strategy)
+            **kwargs: Additional strategy-specific parameters
+
+        Returns:
+            List of Chunk objects
+        """
+        pass
+
+
+class TextChunkStrategy(ChunkingStrategy):
+    """Strategy for chunking text documents into fixed-size chunks."""
+
+    def __init__(self, chunk_size: int = 2000):
+        """Initialize text chunking strategy.
+
+        Args:
+            chunk_size: Target characters per chunk
         """
         self.chunk_size = chunk_size
 
-    def chunk_text(self, text: str) -> list[Chunk]:
+    def chunk(self, text: str, **kwargs) -> list[Chunk]:
         """Split text into fixed-size chunks at nearest spaces.
 
         Args:
@@ -103,7 +115,11 @@ class Chunker:
 
         return chunks
 
-    def encode_images(self, images: list[Image.Image]) -> list[Chunk]:
+
+class ImageChunkStrategy(ChunkingStrategy):
+    """Strategy for converting PIL Images to base64 encoded chunks."""
+
+    def chunk(self, images: list[Image.Image], **kwargs) -> list[Chunk]:
         """Convert PIL Images to base64 encoded chunks.
 
         Args:
@@ -124,6 +140,77 @@ class Chunker:
             chunks.append(Chunk(idx=idx, content=base64_str))
 
         return chunks
+
+
+@dataclass
+class Chunk:
+    """A single chunk of a document."""
+
+    # Chunk index
+    idx: int
+
+    # Chunk content (text or base64 image)
+    content: str
+
+    # Start position in original document (text mode only)
+    start: int | None = None
+
+    # End position in original document (text mode only)
+    end: int | None = None
+
+
+class Chunker:
+    """Split documents into processable chunks for RLM extraction.
+
+    Uses the Strategy pattern - delegates to TextChunkStrategy and ImageChunkStrategy
+    for actual chunking operations. This makes it easy to add new chunking strategies
+    for other document types.
+    """
+
+    def __init__(self, chunk_size: int = 2000):
+        """Initialize chunker.
+
+        Args:
+            chunk_size: Target characters per text chunk (splits at nearest space)
+        """
+        self._text_strategy = TextChunkStrategy(chunk_size)
+        self._image_strategy = ImageChunkStrategy()
+
+    @property
+    def chunk_size(self) -> int:
+        """Get the current chunk size for text chunking."""
+        return self._text_strategy.chunk_size
+
+    @chunk_size.setter
+    def chunk_size(self, value: int) -> None:
+        """Set a new chunk size for text chunking."""
+        self._text_strategy = TextChunkStrategy(value)
+
+    def chunk_text(self, text: str) -> list[Chunk]:
+        """Split text into fixed-size chunks at nearest spaces.
+
+        Delegates to TextChunkStrategy.
+
+        Args:
+            text: Document text to chunk
+
+        Returns:
+            List of Chunk objects with idx, content, start, end
+        """
+        return self._text_strategy.chunk(text)
+
+    def encode_images(self, images: list[Image.Image]) -> list[Chunk]:
+        """Convert PIL Images to base64 encoded chunks.
+
+        Delegates to ImageChunkStrategy.
+
+        Args:
+            images: List of PIL Image objects
+
+        Returns:
+            List of Chunk objects with base64 content
+        """
+        return self._image_strategy.chunk(images)
 
     def chunk_image_files(self, image_paths: list[str]) -> list[Chunk]:
         """Load image files and convert to base64 chunks.
