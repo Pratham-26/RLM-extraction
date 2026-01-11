@@ -15,9 +15,39 @@ RLM enables LLMs to process **arbitrarily long documents** beyond their native c
 - **Parallel Processing** - Extract from multiple chunks simultaneously
 - **Transparent Failures** - Return all failures with results for manual review
 
-## Installation
+# PDF Support
 
-This project uses [uv](https://github.com/astral-sh/uv) for fast Python package management.
+RLM uses [PyMuPDF](https://pymupdf.readthedocs.io/) for PDF processing. PyMuPDF is a high-performance Python library that works on all platforms including Windows, macOS, and Linux. No external dependencies required.
+
+## PDF Processing Mode
+
+The `pdf_mode` parameter in `extract()` and `RLMExtractor` controls how PDFs are processed:
+
+- `'text'` (recommended for text-based PDFs): Extracts text directly from PDF and processes as text chunks
+- `'image'` (recommended for scanned PDFs): Renders PDF pages as images for vision models
+- `'auto'` (default): Chooses 'text' for text/markdown files, 'image' for PDFs
+
+**Default behavior**:
+- Text/markdown files → text mode
+- PDF files → image mode
+- Image files → vision mode
+- Image paths → vision mode
+- Lists → vision mode
+
+**User override**:
+Pass `pdf_mode="text"` to force text extraction from PDFs.
+
+Example:
+```python
+from rlm import RLMExtractor, openai_config
+
+extractor = RLMExtractor(openai_config())
+result = extractor.extract(
+    json_schema=...,
+    document="invoice.pdf",  # PDF file
+    pdf_mode="image"  # Force image mode instead
+)
+```
 
 ```bash
 # Install uv (if not already installed)
@@ -36,6 +66,10 @@ uv pip install -e ".[dev]"
 ```bash
 uv venv && uv pip install -e .
 ```
+
+### PDF Support
+
+RLM uses [PyMuPDF](https://pymupdf.readthedocs.io/) for PDF processing. PyMuPDF is a high-performance Python library that works on all platforms including Windows, macOS, and Linux. No external dependencies required.
 
 ## API Key Setup
 

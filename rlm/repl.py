@@ -9,7 +9,6 @@ The REPLState maintains persistent state across RLM turns, including:
 
 import threading
 from dataclasses import dataclass, field
-from typing import Union
 
 
 @dataclass
@@ -28,7 +27,7 @@ class REPLState:
 
     # The document (never seen in full by Root LM)
     # Document as string (text mode) or list of base64 images (image mode)
-    INPUT: Union[str, list[str]] = ""
+    INPUT: str | list[str] = ""
 
     # Chunk tracking
     # Total number of chunks in the document
@@ -40,12 +39,18 @@ class REPLState:
     # {chunk_idx: error_message} for failed chunks
     failed_chunks: dict[int, str] = field(default_factory=dict)
 
+    # {chunk_idx: retry_count} tracking how many times each chunk was processed
+    chunk_retry_counts: dict[int, int] = field(default_factory=dict)
+
     # What Root LM sees (not raw INPUT)
     # [{idx, gist, confidence, fields_found}] for each processed chunk
     chunk_summaries: list[dict] = field(default_factory=list)
 
-    # Accumulated extracted data in YAML/merged format
+    # Accumulated data (entity contexts or structured values)
     results_so_far: dict = field(default_factory=dict)
+
+    # Accumulated entity contexts: {field_name: [(chunk_idx, description, confidence), ...]}
+    entity_contexts: dict[str, list[tuple[int, str, str]]] = field(default_factory=dict)
 
     # Configuration
     # Full YAML schema for workers (not seen by Root LM in raw form)
@@ -102,6 +107,9 @@ class REPLState:
         with self._lock:
             self.completed_chunks.add(idx)
 
+            # Increment retry count for this chunk
+            self.chunk_retry_counts[idx] = self.chunk_retry_counts.get(idx, 0) + 1
+
             # Track fields found
             if fields_found:
                 self._update_fields_found_unsafe(fields_found)
@@ -116,44 +124,99 @@ class REPLState:
                 }
             )
 
-            # Merge extracted data
+            # Store extracted data
             self._merge_extracted(extracted)
 
-    def _merge_extracted(self, extracted: dict) -> None:
-        """Merge new extraction into results_so_far.
+            # Also accumulate entity contexts if present
+            if self._is_entity_contexts(extracted):
+                self.accumulate_entity_contexts(idx, extracted, confidence)
 
-        Handles:
-        - Nested dictionaries (deep merge)
-        - Lists (extend or append based on keys)
-        - Scalar values (last write wins, with warning)
+    def _is_entity_contexts(self, extracted: dict) -> bool:
+        """Check if extracted dict contains entity contexts vs structured data.
+
+        Entity contexts have string values describing the entity.
+        Structured data has the actual values with proper types.
+
+        Args:
+            extracted: Dict from worker result
+
+        Returns:
+            True if appears to be entity contexts
+        """
+        if not extracted:
+            return False
+
+        # Check if all values are strings (likely contexts)
+        # Contexts tend to be longer than 30 chars
+        for value in extracted.values():
+            if not isinstance(value, str):
+                return False
+            if len(value) < 20:  # Likely a real value, not a description
+                return False
+
+        return True
+
+    def accumulate_entity_contexts(
+        self,
+        idx: int,
+        entity_contexts: dict[str, str],
+        confidence: str = "medium",
+    ) -> None:
+        """Accumulate entity contexts from a chunk.
+
+        Thread-safe - protected by lock for parallel processing.
+
+        Args:
+            idx: Chunk index
+            entity_contexts: Dict of {field_name: context_description} from this chunk
+            confidence: high/medium/low (used for conflict resolution)
+        """
+        with self._lock:
+            for field_name, description in entity_contexts.items():
+                if field_name not in self.entity_contexts:
+                    self.entity_contexts[field_name] = []
+
+                self.entity_contexts[field_name].append((idx, description, confidence))
+
+    def get_entity_contexts_for_root(self, max_contexts: int = 50) -> str:
+        """Format entity contexts for Root LM value extraction.
+
+        Args:
+            max_contexts: Maximum number of contexts to include per field
+
+        Returns:
+            Formatted string with all entity contexts
+        """
+        if not self.entity_contexts:
+            return "No entity contexts collected yet."
+
+        lines = ["Entity Contexts from all chunks:", ""]
+
+        for field_name in sorted(self.entity_contexts.keys()):
+            contexts = self.entity_contexts[field_name]
+            lines.append(f"{field_name}:")
+
+            for chunk_idx, description, conf in contexts[:max_contexts]:
+                lines.append(f"  [Chunk {chunk_idx}, confidence={conf}] {description}")
+
+            if len(contexts) > max_contexts:
+                lines.append(f"  ... and {len(contexts) - max_contexts} more")
+
+            lines.append("")  # Blank line between fields
+
+        return "\n".join(lines)
+
+    def _merge_extracted(self, extracted: dict) -> None:
+        """Store extraction in results_so_far.
+
+        Note: With entity contexts, this is now just a simple store.
+        The actual value extraction happens in Root LM via _extract_values_from_contexts().
         """
         if not extracted:
             return
-
+        # Simple store - entity contexts are accumulated separately
         for key, value in extracted.items():
-            if key not in self.results_so_far:
-                self.results_so_far[key] = value
-            elif isinstance(value, dict) and isinstance(self.results_so_far[key], dict):
-                # Deep merge dictionaries
-                self._deep_merge(self.results_so_far[key], value)
-            elif isinstance(value, list) and isinstance(self.results_so_far[key], list):
-                # Extend lists
-                self.results_so_far[key].extend(value)
-            else:
-                # Scalar or type mismatch - last write wins
-                self.results_so_far[key] = value
-
-    def _deep_merge(self, target: dict, source: dict) -> None:
-        """Deep merge source into target dictionary."""
-        for key, value in source.items():
-            if key not in target:
-                target[key] = value
-            elif isinstance(value, dict) and isinstance(target[key], dict):
-                self._deep_merge(target[key], value)
-            elif isinstance(value, list) and isinstance(target[key], list):
-                target[key].extend(value)
-            else:
-                target[key] = value
+            self.results_so_far[key] = value
 
     def mark_failed(self, idx: int, error: str) -> None:
         """Record a chunk failure.
@@ -199,9 +262,11 @@ class REPLState:
 
         lines = []
         for i, summary in enumerate(self.chunk_summaries[:max_count]):
+            retry_count = self.chunk_retry_counts.get(summary["idx"], 0)
+            retry_info = f" (retry {retry_count})" if retry_count > 0 else ""
             lines.append(
                 f"Chunk {summary['idx']}: {summary['gist']} "
-                f"(confidence: {summary['confidence']})"
+                f"(confidence: {summary['confidence']}){retry_info}"
             )
 
         if len(self.chunk_summaries) > max_count:
@@ -209,7 +274,26 @@ class REPLState:
 
         return "\n".join(lines)
 
-    def reset_for_task(self, input_context: Union[str, list[str]], yaml_schema: str) -> None:
+    def get_retry_summary(self) -> str:
+        """Return a summary of retry counts for Root LM.
+
+        Returns:
+            String describing retry status for chunks with retries
+        """
+        if not self.chunk_retry_counts:
+            return "No re-extractions yet."
+
+        retried_chunks = {idx: count for idx, count in self.chunk_retry_counts.items() if count > 1}
+        if not retried_chunks:
+            return "No chunks re-extracted yet."
+
+        parts = []
+        for idx, count in sorted(retried_chunks.items()):
+            parts.append(f"Chunk {idx}: {count} total attempts")
+
+        return "Re-extractions: " + ", ".join(parts)
+
+    def reset_for_task(self, input_context: str | list[str], yaml_schema: str) -> None:
         """Reset state for a new extraction task."""
         self.INPUT = input_context
         self.yaml_schema = yaml_schema
@@ -225,6 +309,8 @@ class REPLState:
         self.failed_chunks.clear()
         self.chunk_summaries.clear()
         self.results_so_far.clear()
+        self.entity_contexts.clear()
+        self.chunk_retry_counts.clear()
 
         # Clear field tracking for new task
         self.fields_found_all.clear()

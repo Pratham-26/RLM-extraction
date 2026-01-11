@@ -77,6 +77,17 @@ class RLMConfig:
     # Maximum characters allowed in user_context parameter
     max_user_context_chars: int = 10_000  # ~2,500 tokens
 
+    # Retry limits
+    # Maximum re-extraction attempts per chunk before giving up
+    max_retries: int = 3
+
+    # PDF processing mode
+    # Controls how PDFs are processed: 'text', 'image', or 'auto'
+    # - 'text': Extract text directly from PDF and process as text chunks
+    # - 'image': Render PDF pages as images for vision models
+    # - 'auto': Choose automatically based on file type (text/markdown → text, others → image)
+    pdf_mode: Literal["text", "image", "auto"] = "auto"
+
     # PDF to image conversion settings
     pdf_config: PDFConfig = field(default_factory=PDFConfig)
 
@@ -151,6 +162,7 @@ class RLMConfig:
 
 
 # Preset configurations
+
 
 def openai_config() -> RLMConfig:
     """Pre-configured RLM for OpenAI models.

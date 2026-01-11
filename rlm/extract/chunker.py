@@ -15,15 +15,12 @@ import base64
 import io
 import os
 from dataclasses import dataclass
-from typing import Union
 
+import fitz  # PyMuPDF
 from PIL import Image
 
-
 # Supported image file extensions
-VALID_IMAGE_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif"
-}
+VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 
 # Supported text file extensions
 VALID_TEXT_EXTENSIONS = {".txt", ".md"}
@@ -32,9 +29,7 @@ VALID_TEXT_EXTENSIONS = {".txt", ".md"}
 VALID_PDF_EXTENSION = {".pdf"}
 
 # All supported file extensions
-ALL_SUPPORTED_EXTENSIONS = (
-    VALID_IMAGE_EXTENSIONS | VALID_TEXT_EXTENSIONS | VALID_PDF_EXTENSION
-)
+ALL_SUPPORTED_EXTENSIONS = VALID_IMAGE_EXTENSIONS | VALID_TEXT_EXTENSIONS | VALID_PDF_EXTENSION
 
 # Chunking constants
 # Maximum characters to search backward for a word boundary.
@@ -247,7 +242,7 @@ class Chunker:
 
         return self.encode_images(images)
 
-    def count_chunks(self, document: Union[str, list[Image.Image], list[str]]) -> int:
+    def count_chunks(self, document: str | list[Image.Image] | list[str]) -> int:
         """Count how many chunks a document will produce.
 
         Args:
@@ -310,91 +305,130 @@ class Chunker:
         )
 
     def convert_pdf_to_images(self, pdf_path: str, pdf_config) -> list[Image.Image]:
-        """Convert PDF to list of PIL Images using pdf2image.
+        """Convert PDF to list of PIL Images using PyMuPDF.
 
         Args:
-            pdf_path: Path to the PDF file
+            pdf_path: Path to PDF file
             pdf_config: PDFConfig object with conversion settings
 
         Returns:
             List of PIL Image objects (one per page)
 
         Raises:
-            FileNotFoundError: If the PDF file does not exist
-            RuntimeError: If poppler is not installed or PDF conversion fails
+            FileNotFoundError: If PDF file does not exist
+            RuntimeError: If PDF conversion fails
         """
+
         abs_path = os.path.abspath(pdf_path)
         if not os.path.exists(abs_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
         ext = os.path.splitext(abs_path)[1].lower()
         if ext not in VALID_PDF_EXTENSION:
-            raise ValueError(
-                f"Invalid PDF file type: {pdf_path}. "
-                f"Expected .pdf extension."
-            )
-
-        from pdf2image import convert_from_path
-        from pdf2image.exceptions import (
-            PDFInfoNotInstalledError,
-            PDFPageCountError,
-            PDFSyntaxError,
-        )
+            raise ValueError(f"Invalid PDF file type: {pdf_path}. Expected .pdf extension.")
 
         try:
-            # Convert PDF to images
-            images = convert_from_path(
-                abs_path,
-                dpi=pdf_config.dpi,
-                fmt=pdf_config.fmt,
-                thread_count=pdf_config.thread_count,
-            )
+            # Open PDF document
+            doc = fitz.open(abs_path)
 
-            # Apply page range filters
-            if pdf_config.first_page_only and images:
-                return images[:1]
+            # Determine page range to process
+            all_pages = range(len(doc))
 
             if pdf_config.page_range is not None:
                 if isinstance(pdf_config.page_range, tuple):
                     # (start, end) - 1-indexed, inclusive
                     start, end = pdf_config.page_range
-                    images = images[start - 1 : end]
+                    page_indices = range(start - 1, min(end, len(all_pages)))
                 elif isinstance(pdf_config.page_range, list):
                     # [1, 3, 5] - specific page numbers (1-indexed)
-                    page_indices = [p - 1 for p in pdf_config.page_range]
-                    images = [images[i] for i in page_indices if 0 <= i < len(images)]
+                    page_indices = [i - 1 for i in pdf_config.page_range if 1 <= i <= len(doc)]
+                else:
+                    page_indices = all_pages
+            else:
+                page_indices = all_pages
 
+            # Apply first_page_only filter
+            if pdf_config.first_page_only and page_indices:
+                page_indices = [page_indices[0]]
+
+            # Convert pages to images
+            images = []
+            dpi_scale = pdf_config.dpi / 72.0
+
+            for page_idx in page_indices:
+                page = doc.load_page(page_idx)
+
+                # Render page to pixmap
+                mat = fitz.Matrix(dpi_scale, dpi_scale)
+                pix = page.get_pixmap(matrix=mat)
+
+                # Convert to PIL Image
+                img_bytes = pix.tobytes(output=pdf_config.fmt.upper())
+                img = Image.open(io.BytesIO(img_bytes))
+
+                images.append(img)
+
+            doc.close()
             return images
 
-        except PDFInfoNotInstalledError as e:
-            raise RuntimeError(
-                "PDF processing requires Poppler to be installed.\n"
-                "Install with:\n"
-                "  macOS: brew install poppler\n"
-                "  Ubuntu: sudo apt-get install poppler-utils\n"
-                "  Windows: Download from https://github.com/oschwartz10612/poppler-windows/releases/\n"
-                f"Original error: {e}"
-            )
-        except (PDFPageCountError, PDFSyntaxError) as e:
+        except Exception as e:
             raise RuntimeError(f"Failed to process PDF: {e}")
+
+    def extract_pdf_text(self, pdf_path: str) -> str:
+        """Extract text from PDF using PyMuPDF.
+
+        Args:
+            pdf_path: Path to PDF file
+
+        Returns:
+            Extracted text as a string
+
+        Raises:
+            FileNotFoundError: If PDF file does not exist
+            RuntimeError: If PDF text extraction fails
+        """
+
+        abs_path = os.path.abspath(pdf_path)
+        if not os.path.exists(abs_path):
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+
+        ext = os.path.splitext(abs_path)[1].lower()
+        if ext not in VALID_PDF_EXTENSION:
+            raise ValueError(f"Invalid PDF file type: {pdf_path}. Expected .pdf extension.")
+
+        try:
+            # Open PDF and extract text from all pages
+            doc = fitz.open(abs_path)
+            text = ""
+            for page in doc:
+                text += page.get_text()
+            doc.close()
+            return text
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract text from PDF: {e}")
 
     def chunk_file(
         self,
         file_path: str,
         pdf_config=None,
+        pdf_mode="auto",
     ) -> list[Chunk]:
         """Route file to appropriate chunking method based on extension.
 
         Args:
             file_path: Path to the file (.txt, .md, .pdf, or image)
             pdf_config: PDFConfig object for PDF conversion
+            pdf_mode: PDF processing mode ('text', 'image', or 'auto')
+                       Default is 'auto' which chooses text for text/markdown files,
+                       image for PDFs, or based on file extension.
 
         Returns:
             List of Chunk objects
 
         Raises:
-            FileNotFoundError: If the file does not exist
-            ValueError: If the file type is not supported
+            FileNotFoundError: If file does not exist
+            ValueError: If file type is not supported
         """
         abs_path = os.path.abspath(file_path)
         if not os.path.exists(abs_path):
@@ -408,13 +442,30 @@ class Chunker:
             return self.chunk_text(content)
 
         elif ext in VALID_PDF_EXTENSION:
-            # Convert PDF to images and chunk them
-            if pdf_config is None:
-                from rlm.config import PDFConfig
+            # Determine PDF processing mode
+            if pdf_mode == "auto":
+                # Auto: use text for text/markdown-like content, otherwise image
+                # For simplicity, treat PDFs as image mode in auto
+                mode = "image"
+            else:
+                mode = pdf_mode
 
-                pdf_config = PDFConfig()
-            images = self.convert_pdf_to_images(file_path, pdf_config)
-            return self.encode_images(images)
+            if mode == "text":
+                # Extract text and chunk as text
+                if pdf_config is None:
+                    from rlm.config import PDFConfig
+
+                    pdf_config = PDFConfig()
+                text_content = self.extract_pdf_text(file_path)
+                return self.chunk_text(text_content)
+            else:
+                # Convert PDF to images and chunk them
+                if pdf_config is None:
+                    from rlm.config import PDFConfig
+
+                    pdf_config = PDFConfig()
+                images = self.convert_pdf_to_images(file_path, pdf_config)
+                return self.encode_images(images)
 
         elif ext in VALID_IMAGE_EXTENSIONS:
             # Load image file

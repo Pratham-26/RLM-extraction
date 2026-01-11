@@ -291,9 +291,7 @@ class RLMExtractor(dspy.Module):
             ValueError: If user_context is empty, too short, or too long
         """
         if not isinstance(user_context, str):
-            raise TypeError(
-                f"user_context must be a string, got {type(user_context).__name__}"
-            )
+            raise TypeError(f"user_context must be a string, got {type(user_context).__name__}")
 
         if len(user_context) == 0:
             raise ValueError("user_context cannot be empty")
@@ -323,9 +321,9 @@ class RLMExtractor(dspy.Module):
             Sanitized context string
         """
         # Remove control characters except newlines and tabs
-        sanitized = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', user_context)
+        sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", user_context)
         # Limit repeated newlines (max 2 consecutive)
-        sanitized = re.sub(r'\n{3,}', '\n\n', sanitized)
+        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
         return sanitized.strip()
 
     def _condense_user_context(self, user_context: str, yaml_schema: str) -> str:
@@ -371,8 +369,16 @@ class RLMExtractor(dspy.Module):
 
         return False
 
-    def _detect_modality(self, document) -> str:
-        """Determine if we need vision workers."""
+    def _detect_modality(self, document, pdf_mode: str = "auto") -> str:
+        """Determine if we need vision workers.
+
+        Args:
+            document: The document to process
+            pdf_mode: PDF processing mode ('text', 'image', or 'auto')
+
+        Returns:
+            'text' or 'vision'
+        """
         if isinstance(document, str):
             # Check if it's a file path
             if self._is_file_path(document):
@@ -380,7 +386,12 @@ class RLMExtractor(dspy.Module):
                 if ext in VALID_TEXT_EXTENSIONS:
                     return "text"
                 elif ext in VALID_PDF_EXTENSION:
-                    return "vision"
+                    # PDF file - check pdf_mode
+                    if pdf_mode == "text":
+                        return "text"
+                    else:
+                        # 'image' or 'auto' both use vision for PDFs
+                        return "vision"
                 # Unknown extension - default to text, will fail later if invalid
                 return "text"
             return "text"
@@ -554,11 +565,13 @@ class RLMExtractor(dspy.Module):
                 content = chunks[idx].content
                 preview = content[:100] if len(content) > 100 else content
 
-            failures.append({
-                "chunk_idx": idx,
-                "error": error,
-                "content_preview": preview,
-            })
+            failures.append(
+                {
+                    "chunk_idx": idx,
+                    "error": error,
+                    "content_preview": preview,
+                }
+            )
         return failures
 
     def _get_token_usage(self) -> dict:
