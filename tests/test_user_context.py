@@ -196,7 +196,9 @@ class TestExtractorUserContext:
 
                     with patch("rlm.extract.extractor.dspy.context"):
                         with patch("rlm.extract.extractor.dspy.configure"):
-                            with patch.object(extractor.schema_converter, "yaml_to_json", return_value={}):
+                            with patch.object(
+                                extractor, "_extract_values_from_contexts", return_value={}
+                            ):
                                 try:
                                     extractor.extract(
                                         json_schema={"type": "object", "properties": {}},

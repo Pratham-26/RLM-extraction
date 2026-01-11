@@ -1,12 +1,11 @@
 """Tests for RLMConfig."""
 
-import pytest
 
 from rlm.config import (
     RLMConfig,
-    openai_config,
     anthropic_config,
     cost_optimized_config,
+    openai_config,
     quality_config,
 )
 
@@ -42,6 +41,7 @@ class TestRLMConfig:
         assert config.max_parallel_workers == 5
         assert config.max_turns == 20
         assert config.code_execution_timeout == 30
+        assert config.max_retries == 3
 
     def test_init_custom_values(self):
         """Test config with custom values."""
@@ -55,6 +55,7 @@ class TestRLMConfig:
             parallel_retry=True,
             max_parallel_workers=10,
             max_turns=50,
+            max_retries=5,
         )
 
         assert config.chunk_size == 3000
@@ -63,6 +64,7 @@ class TestRLMConfig:
         assert config.parallel_retry is True
         assert config.max_parallel_workers == 10
         assert config.max_turns == 50
+        assert config.max_retries == 5
 
     def test_summary_level_validation(self):
         """Test that summary_level accepts valid values."""

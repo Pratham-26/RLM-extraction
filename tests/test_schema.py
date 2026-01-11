@@ -22,7 +22,7 @@ class TestSchemaConverter:
             "properties": {
                 "name": {"type": "string"},
                 "age": {"type": "integer"},
-            }
+            },
         }
 
         yaml_str = converter.json_to_yaml_chunks(schema)
@@ -48,12 +48,12 @@ class TestSchemaConverter:
                             "type": "object",
                             "properties": {
                                 "street": {"type": "string"},
-                                "city": {"type": "string"}
-                            }
-                        }
-                    }
+                                "city": {"type": "string"},
+                            },
+                        },
+                    },
                 }
-            }
+            },
         }
 
         yaml_str = converter.json_to_yaml_chunks(schema)
@@ -75,13 +75,10 @@ class TestSchemaConverter:
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "price": {"type": "number"}
-                        }
-                    }
+                        "properties": {"name": {"type": "string"}, "price": {"type": "number"}},
+                    },
                 }
-            }
+            },
         }
 
         yaml_str = converter.json_to_yaml_chunks(schema)
@@ -99,9 +96,9 @@ class TestSchemaConverter:
                 "email": {
                     "type": "string",
                     "description": "User's email address",
-                    "format": "email"
+                    "format": "email",
                 }
-            }
+            },
         }
 
         yaml_str = converter.json_to_yaml_chunks(schema)
@@ -118,9 +115,9 @@ class TestSchemaConverter:
             "type": "object",
             "properties": {
                 "required_field": {"type": "string"},
-                "optional_field": {"type": "string"}
+                "optional_field": {"type": "string"},
             },
-            "required": ["required_field"]
+            "required": ["required_field"],
         }
 
         yaml_str = converter.json_to_yaml_chunks(schema)
@@ -128,127 +125,3 @@ class TestSchemaConverter:
         assert "required_field" in yaml_str
         assert "optional_field" in yaml_str
         assert "(required)" in yaml_str
-
-    def test_yaml_to_json_simple(self):
-        """Test converting YAML back to JSON."""
-        converter = SchemaConverter()
-
-        schema = {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "age": {"type": "integer"},
-                "active": {"type": "boolean"}
-            }
-        }
-
-        yaml_data = """
-name: John Doe
-age: "30"
-active: "true"
-"""
-
-        result = converter.yaml_to_json(yaml_data, schema)
-
-        assert result["name"] == "John Doe"
-        assert result["age"] == 30  # Converted to int
-        assert result["active"] is True  # Converted to bool
-
-    def test_yaml_to_json_type_conversion(self):
-        """Test type conversion in YAML to JSON."""
-        converter = SchemaConverter()
-
-        schema = {
-            "type": "object",
-            "properties": {
-                "count": {"type": "integer"},
-                "price": {"type": "number"},
-                "enabled": {"type": "boolean"}
-            }
-        }
-
-        yaml_data = """
-count: "42"
-price: "19.99"
-enabled: "yes"
-"""
-
-        result = converter.yaml_to_json(yaml_data, schema)
-
-        assert result["count"] == 42
-        assert result["price"] == 19.99
-        assert result["enabled"] is True
-
-    def test_yaml_to_json_nested(self):
-        """Test converting nested YAML to JSON."""
-        converter = SchemaConverter()
-
-        schema = {
-            "type": "object",
-            "properties": {
-                "person": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "age": {"type": "integer"}
-                    }
-                }
-            }
-        }
-
-        yaml_data = """
-person:
-  name: Jane
-  age: "25"
-"""
-
-        result = converter.yaml_to_json(yaml_data, schema)
-
-        assert result["person"]["name"] == "Jane"
-        assert result["person"]["age"] == 25
-
-    def test_yaml_to_json_arrays(self):
-        """Test converting YAML arrays to JSON."""
-        converter = SchemaConverter()
-
-        schema = {
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "price": {"type": "number"}
-                        }
-                    }
-                }
-            }
-        }
-
-        yaml_data = """
-items:
-  - name: Item 1
-    price: "10.00"
-  - name: Item 2
-    price: "20.00"
-"""
-
-        result = converter.yaml_to_json(yaml_data, schema)
-
-        assert len(result["items"]) == 2
-        assert result["items"][0]["name"] == "Item 1"
-        assert result["items"][0]["price"] == 10.0
-
-    def test_fix_and_parse_yaml(self):
-        """Test fixing malformed YAML."""
-        converter = SchemaConverter()
-
-        # Slightly malformed YAML
-        malformed = "name: Test\nage: 30"
-
-        result = converter._fix_and_parse_yaml(malformed)
-
-        assert result["name"] == "Test"
-        assert result["age"] == 30
