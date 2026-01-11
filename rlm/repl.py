@@ -7,6 +7,7 @@ The REPLState maintains persistent state across RLM turns, including:
 - Chunk summaries for Root LM visibility
 """
 
+import threading
 from dataclasses import dataclass, field
 from typing import Union
 
@@ -17,7 +18,13 @@ class REPLState:
 
     The Root LM never sees the full INPUT - it only sees summaries and
     accumulated results. Workers see individual chunks.
+
+    Thread-safe: update_chunk_result() and mark_failed() are protected by a lock
+    for use with parallel worker processing.
     """
+
+    # Thread safety lock for parallel updates
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # The document (never seen in full by Root LM)
     # Document as string (text mode) or list of base64 images (image mode)
@@ -83,6 +90,8 @@ class REPLState:
     ) -> None:
         """Called after worker completes successfully.
 
+        Thread-safe - protected by lock for parallel processing.
+
         Args:
             idx: Chunk index
             gist: Summary of chunk content
@@ -90,24 +99,25 @@ class REPLState:
             confidence: high/medium/low
             fields_found: List of schema fields found in this chunk
         """
-        self.completed_chunks.add(idx)
+        with self._lock:
+            self.completed_chunks.add(idx)
 
-        # Track fields found
-        if fields_found:
-            self.update_fields_found(fields_found)
+            # Track fields found
+            if fields_found:
+                self._update_fields_found_unsafe(fields_found)
 
-        # Store summary for Root LM
-        self.chunk_summaries.append(
-            {
-                "idx": idx,
-                "gist": gist,
-                "confidence": confidence,
-                "fields_found": fields_found or [],
-            }
-        )
+            # Store summary for Root LM
+            self.chunk_summaries.append(
+                {
+                    "idx": idx,
+                    "gist": gist,
+                    "confidence": confidence,
+                    "fields_found": fields_found or [],
+                }
+            )
 
-        # Merge extracted data
-        self._merge_extracted(extracted)
+            # Merge extracted data
+            self._merge_extracted(extracted)
 
     def _merge_extracted(self, extracted: dict) -> None:
         """Merge new extraction into results_so_far.
@@ -146,8 +156,12 @@ class REPLState:
                 target[key] = value
 
     def mark_failed(self, idx: int, error: str) -> None:
-        """Record a chunk failure."""
-        self.failed_chunks[idx] = error
+        """Record a chunk failure.
+
+        Thread-safe - protected by lock for parallel processing.
+        """
+        with self._lock:
+            self.failed_chunks[idx] = error
 
     def get_state_summary(self) -> str:
         """Return a formatted summary for Root LM."""
@@ -279,17 +293,27 @@ class REPLState:
                     # For arrays of objects, track with [] notation
                     self._extract_required_fields(items, f"{full_name}[]")
 
-    def update_fields_found(self, fields_found: list[str]) -> None:
+    def _update_fields_found_unsafe(self, fields_found: list[str]) -> None:
         """Update the aggregate set of fields found across all chunks.
 
-        Args:
-            fields_found: List of field names found in a chunk
+        Not thread-safe - must be called with lock held.
         """
         for field in fields_found:
             self.fields_found_all.add(field)
             # Also track if this is a required field
             if field in self.required_fields:
                 self.required_fields_found.add(field)
+
+    def update_fields_found(self, fields_found: list[str]) -> None:
+        """Update the aggregate set of fields found across all chunks.
+
+        Thread-safe - protected by lock for parallel processing.
+
+        Args:
+            fields_found: List of field names found in a chunk
+        """
+        with self._lock:
+            self._update_fields_found_unsafe(fields_found)
 
     def get_missing_required_fields(self) -> list[str]:
         """Return list of required fields not yet found.

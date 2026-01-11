@@ -77,10 +77,6 @@ class RLMConfig:
     # Maximum characters allowed in user_context parameter
     max_user_context_chars: int = 10_000  # ~2,500 tokens
 
-    # API configuration
-    # API key (uses env var if not provided)
-    api_key: str | None = None
-
     # PDF to image conversion settings
     pdf_config: PDFConfig = field(default_factory=PDFConfig)
 
@@ -89,41 +85,37 @@ class RLMConfig:
     _worker_text_lm: dspy.LM = field(init=False, repr=False)
     _worker_vision_lm: dspy.LM = field(init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        """Validate configuration values."""
+        valid_summary_levels = {"minimal", "standard", "verbose"}
+        if self.summary_level not in valid_summary_levels:
+            raise ValueError(
+                f"Invalid summary_level: {self.summary_level!r}. "
+                f"Must be one of: {', '.join(sorted(valid_summary_levels))}"
+            )
+
     def configure_dspy(self) -> None:
         """Configure DSPy with the root LM as default.
 
-        Raises:
-            APIKeyError: If required API keys are not configured
+        DSPy uses litellm internally which will automatically read API keys
+        from environment variables. Ensure your API keys are set before running.
         """
-        api_key = self.api_key or _get_api_key_for_model(self.root_model)
-        if api_key is None:
-            raise ValueError(f"API key for root model ({self.root_model}) must be provided")
-
         # Configure root LM (orchestrator)
         self._root_lm = dspy.LM(
             self.root_model,
-            api_key=api_key,
             max_tokens=4096,
             temperature=0.0,
         )
 
         # Configure worker LMs
-        text_key = self.api_key or _get_api_key_for_model(self.worker_text_model)
-        if text_key is None:
-            raise ValueError(f"API key for text worker ({self.worker_text_model}) must be provided")
         self._worker_text_lm = dspy.LM(
             self.worker_text_model,
-            api_key=text_key,
             max_tokens=2048,
             temperature=0.0,
         )
 
-        vision_key = self.api_key or _get_api_key_for_model(self.worker_vision_model)
-        if vision_key is None:
-            raise ValueError(f"API key for vision worker ({self.worker_vision_model}) must be provided")
         self._worker_vision_lm = dspy.LM(
             self.worker_vision_model,
-            api_key=vision_key,
             max_tokens=2048,
             temperature=0.0,
         )
@@ -156,51 +148,6 @@ class RLMConfig:
         if modality == "text":
             return self._worker_text_lm
         return self._worker_vision_lm
-
-
-class APIKeyError(ValueError):
-    """Raised when a required API key is not configured."""
-
-    def __init__(self, provider: str, env_var: str):
-        self.provider = provider
-        self.env_var = env_var
-        super().__init__(
-            f"{provider} API key not found. "
-            f"Please set the {env_var} environment variable."
-        )
-
-
-def _get_api_key_for_model(model: str) -> str:
-    """Get the appropriate API key for a given model.
-
-    Raises:
-        APIKeyError: If the required API key is not found in environment.
-    """
-    import os
-
-    model_lower = model.lower()
-
-    if "openai" in model_lower or model_lower.startswith("gpt"):
-        key = os.getenv("OPENAI_API_KEY")
-        if not key:
-            raise APIKeyError("OpenAI", "OPENAI_API_KEY")
-        return key
-    elif "anthropic" in model_lower or "claude" in model_lower:
-        key = os.getenv("ANTHROPIC_API_KEY")
-        if not key:
-            raise APIKeyError("Anthropic", "ANTHROPIC_API_KEY")
-        return key
-    elif "openrouter" in model_lower:
-        key = os.getenv("OPENROUTER_API_KEY")
-        if not key:
-            raise APIKeyError("OpenRouter", "OPENROUTER_API_KEY")
-        return key
-
-    # Default to OPENAI_API_KEY
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        raise APIKeyError("OpenAI (default)", "OPENAI_API_KEY")
-    return key
 
 
 # Preset configurations

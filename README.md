@@ -37,6 +37,32 @@ uv pip install -e ".[dev]"
 uv venv && uv pip install -e .
 ```
 
+## API Key Setup
+
+RLM uses DSPy which internally uses [litellm](https://litellm.ai/) to automatically handle API keys from environment variables. Set your API keys before running:
+
+```bash
+# Copy the example environment file
+cp .env.example .env
+
+# Edit .env and add your API keys, then source it
+export $(cat .env | xargs)
+
+# Or export directly (not recommended for production)
+export OPENAI_API_KEY=sk-your-key-here
+export ANTHROPIC_API_KEY=sk-ant-your-key-here
+```
+
+### Supported Providers
+
+| Provider | Environment Variable | Models |
+|----------|---------------------|--------|
+| OpenAI | `OPENAI_API_KEY` | `openai/gpt-4o`, `openai/gpt-4o-mini` |
+| Anthropic | `ANTHROPIC_API_KEY` | `anthropic/claude-sonnet-4`, `anthropic/claude-haiku-4` |
+| OpenRouter | `OPENROUTER_API_KEY` | Various (see [openrouter.ai](https://openrouter.ai/models)) |
+
+> **Note:** DSPy/litellm will automatically resolve the correct API key based on the model prefix. You only need to set environment variables for the providers you plan to use.
+
 ## Quick Start
 
 ```python

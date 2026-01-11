@@ -1,6 +1,5 @@
 """Tests for RLMConfig."""
 
-import os
 import pytest
 
 from rlm.config import (
@@ -108,78 +107,3 @@ class TestRLMConfig:
         assert config.root_model == "anthropic/claude-sonnet-4"
         assert config.worker_text_model == "openai/gpt-4o"
         assert config.worker_vision_model == "anthropic/claude-sonnet-4"
-
-
-class TestGetAPIKey:
-    """Test API key detection."""
-
-    def test_openai_model(self):
-        """Test API key for OpenAI models."""
-        from rlm.config import _get_api_key_for_model
-
-        # Mock the environment
-        original_key = os.environ.get("OPENAI_API_KEY")
-        os.environ["OPENAI_API_KEY"] = "test-key"
-
-        try:
-            key = _get_api_key_for_model("openai/gpt-4o")
-            assert key == "test-key"
-
-            key = _get_api_key_for_model("gpt-4o")
-            assert key == "test-key"
-        finally:
-            if original_key:
-                os.environ["OPENAI_API_KEY"] = original_key
-            else:
-                os.environ.pop("OPENAI_API_KEY", None)
-
-    def test_anthropic_model(self):
-        """Test API key for Anthropic models."""
-        from rlm.config import _get_api_key_for_model
-
-        original_key = os.environ.get("ANTHROPIC_API_KEY")
-        os.environ["ANTHROPIC_API_KEY"] = "test-key"
-
-        try:
-            key = _get_api_key_for_model("anthropic/claude-sonnet-4")
-            assert key == "test-key"
-
-            key = _get_api_key_for_model("claude-opus-4")
-            assert key == "test-key"
-        finally:
-            if original_key:
-                os.environ["ANTHROPIC_API_KEY"] = original_key
-            else:
-                os.environ.pop("ANTHROPIC_API_KEY", None)
-
-    def test_openrouter_model(self):
-        """Test API key for OpenRouter models."""
-        from rlm.config import _get_api_key_for_model
-
-        original_key = os.environ.get("OPENROUTER_API_KEY")
-        os.environ["OPENROUTER_API_KEY"] = "test-key"
-
-        try:
-            key = _get_api_key_for_model("openrouter/model")
-            assert key == "test-key"
-        finally:
-            if original_key:
-                os.environ["OPENROUTER_API_KEY"] = original_key
-            else:
-                os.environ.pop("OPENROUTER_API_KEY", None)
-
-    def test_unknown_model_defaults_to_openai(self):
-        """Test that unknown models default to OPENAI_API_KEY."""
-        from rlm.config import _get_api_key_for_model
-
-        original_key = os.environ.get("OPENAI_API_KEY")
-        os.environ["OPENAI_API_KEY"] = "default-key"
-
-        try:
-            key = _get_api_key_for_model("unknown/model")
-            assert key == "default-key"
-        finally:
-            if original_key:
-                os.environ["OPENAI_API_KEY"] = original_key
-            else:
-                os.environ.pop("OPENAI_API_KEY", None)
