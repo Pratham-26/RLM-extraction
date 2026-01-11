@@ -2,7 +2,7 @@
 
 import pytest
 
-from rlm.extract.extractor import ExtractionResult
+from rlm_extractor.extract.extractor import ExtractionResult
 
 
 class TestExtractionResult:

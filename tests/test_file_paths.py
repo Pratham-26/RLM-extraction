@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
-from rlm.config import PDFConfig, RLMConfig
-from rlm.extract.chunker import (
+from rlm_extractor.config import PDFConfig, RLMConfig
+from rlm_extractor.extract.chunker import (
     ALL_SUPPORTED_EXTENSIONS,
     VALID_IMAGE_EXTENSIONS,
     VALID_PDF_EXTENSION,
@@ -282,7 +282,7 @@ class TestChunkFile:
         finally:
             os.unlink(temp_path)
 
-    @patch("rlm.extract.chunker.convert_pdf_to_images")
+    @patch("rlm_extractor.extract.chunker.Chunker.convert_pdf_to_images")
     def test_chunk_file_pdf(self, mock_convert):
         mock_image = MagicMock(spec=Image.Image)
         mock_convert.return_value = [mock_image]

@@ -2,7 +2,7 @@
 
 import pytest
 
-from rlm.extract.schema import SchemaConverter
+from rlm_extractor.extract.schema import SchemaConverter
 
 
 class TestSchemaConverter:

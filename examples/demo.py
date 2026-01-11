@@ -4,8 +4,7 @@ A minimal example showing how to use the RLM schema extraction system.
 """
 
 import os
-from rlm import RLMExtractor, RLMConfig
-from rlm.config import openai_config, anthropic_config, cost_optimized_config
+from rlm_extractor import RLMExtractor, RLMConfig
 
 
 # Sample document
@@ -55,26 +54,26 @@ SCHEMA = {
                 "name": {"type": "string"},
                 "email": {"type": "string"},
                 "phone": {"type": "string"},
-                "address": {"type": "string"}
-            }
+                "address": {"type": "string"},
+            },
         },
         "account": {
             "type": "object",
             "properties": {
                 "account_number": {"type": "string"},
                 "account_type": {"type": "string"},
-                "status": {"type": "string"}
-            }
+                "status": {"type": "string"},
+            },
         },
         "request": {
             "type": "object",
             "properties": {
                 "subject": {"type": "string"},
                 "priority": {"type": "string"},
-                "reference": {"type": "string"}
-            }
-        }
-    }
+                "reference": {"type": "string"},
+            },
+        },
+    },
 }
 
 
@@ -84,10 +83,14 @@ def main():
     print("RLM Schema Extraction Demo")
     print("=" * 50)
 
-    # Use preset config (or customize)
-    config = openai_config()
-    config.chunk_size = 1500
-    config.max_parallel_workers = 3
+    # Configure with your preferred models
+    config = RLMConfig(
+        root_model="openrouter/anthropic/claude-sonnet-4",
+        worker_text_model="openrouter/anthropic/claude-haiku-4",
+        worker_vision_model="openrouter/anthropic/claude-sonnet-4",
+        chunk_size=1500,
+        max_parallel_workers=3,
+    )
 
     print(f"\nConfig:")
     print(f"  Root LM: {config.root_model}")
@@ -111,6 +114,7 @@ def main():
     print("=" * 50)
 
     import json
+
     print("\nExtracted Data:")
     print(json.dumps(result.data, indent=2))
 
@@ -122,8 +126,8 @@ def main():
 
 
 if __name__ == "__main__":
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Set OPENAI_API_KEY environment variable to run this demo.")
+    if not os.getenv("OPENROUTER_API_KEY"):
+        print("Set OPENROUTER_API_KEY environment variable to run this demo.")
         exit(1)
 
     main()

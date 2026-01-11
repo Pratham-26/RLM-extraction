@@ -2,7 +2,7 @@
 
 Handles:
 - Text documents: Fixed-size slices at nearest space
-- Images: Convert to base64 encoded strings
+- Images: Store PIL Images for DSPy vision model processing
 
 Uses the Strategy pattern for extensibility - different chunking strategies
 can be added by implementing the ChunkingStrategy ABC.
@@ -11,13 +11,22 @@ can be added by implementing the ChunkingStrategy ABC.
 from __future__ import annotations
 
 import abc
-import base64
 import io
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+import dspy
 import fitz  # PyMuPDF
 from PIL import Image
+
+if TYPE_CHECKING:
+    # Import only for type checking to avoid circular imports
+    pass
+
+if TYPE_CHECKING:
+    # Import only for type checking to avoid circular imports
+    pass
 
 # Supported image file extensions
 VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
@@ -112,27 +121,23 @@ class TextChunkStrategy(ChunkingStrategy):
 
 
 class ImageChunkStrategy(ChunkingStrategy):
-    """Strategy for converting PIL Images to base64 encoded chunks."""
+    """Strategy for storing PIL Images directly for DSPy vision processing."""
 
     def chunk(self, images: list[Image.Image], **kwargs) -> list[Chunk]:
-        """Convert PIL Images to base64 encoded chunks.
+        """Store PIL Images directly for DSPy vision model processing.
+
+        DSPy's Image type handles encoding and formatting internally.
 
         Args:
             images: List of PIL Image objects
 
         Returns:
-            List of Chunk objects with base64 content
+            List of Chunk objects with PIL Image content
         """
         chunks = []
 
         for idx, image in enumerate(images):
-            # Convert to base64
-            buffered = io.BytesIO()
-            image.save(buffered, format="PNG")
-            img_bytes = buffered.getvalue()
-            base64_str = base64.b64encode(img_bytes).decode("utf-8")
-
-            chunks.append(Chunk(idx=idx, content=base64_str))
+            chunks.append(Chunk(idx=idx, content=image))
 
         return chunks
 
@@ -144,8 +149,8 @@ class Chunk:
     # Chunk index
     idx: int
 
-    # Chunk content (text or base64 image)
-    content: str
+    # Chunk content (text string, PIL Image, or dspy.Image)
+    content: str | Image.Image | dspy.Image
 
     # Start position in original document (text mode only)
     start: int | None = None
@@ -195,26 +200,27 @@ class Chunker:
         return self._text_strategy.chunk(text)
 
     def encode_images(self, images: list[Image.Image]) -> list[Chunk]:
-        """Convert PIL Images to base64 encoded chunks.
+        """Store PIL Images for DSPy vision model processing.
 
-        Delegates to ImageChunkStrategy.
+        Delegates to ImageChunkStrategy which stores PIL Images directly.
+        DSPy's Image type handles encoding and formatting internally.
 
         Args:
             images: List of PIL Image objects
 
         Returns:
-            List of Chunk objects with base64 content
+            List of Chunk objects with PIL Image content
         """
         return self._image_strategy.chunk(images)
 
     def chunk_image_files(self, image_paths: list[str]) -> list[Chunk]:
-        """Load image files and convert to base64 chunks.
+        """Load image files and store PIL Images for DSPy vision processing.
 
         Args:
             image_paths: List of image file paths
 
         Returns:
-            List of Chunk objects with base64 content
+            List of Chunk objects with PIL Image content
 
         Raises:
             FileNotFoundError: If a file does not exist
@@ -453,7 +459,7 @@ class Chunker:
             if mode == "text":
                 # Extract text and chunk as text
                 if pdf_config is None:
-                    from rlm.config import PDFConfig
+                    from rlm_extractor.config import PDFConfig
 
                     pdf_config = PDFConfig()
                 text_content = self.extract_pdf_text(file_path)
@@ -461,7 +467,7 @@ class Chunker:
             else:
                 # Convert PDF to images and chunk them
                 if pdf_config is None:
-                    from rlm.config import PDFConfig
+                    from rlm_extractor.config import PDFConfig
 
                     pdf_config = PDFConfig()
                 images = self.convert_pdf_to_images(file_path, pdf_config)

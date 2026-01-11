@@ -11,26 +11,25 @@ Coordinates the entire extraction process:
 import json
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Union
+from typing import Literal
 
 import dspy
 from PIL import Image
 
-from rlm.config import RLMConfig
-from rlm.extract.chunker import (
+from rlm_extractor.config import RLMConfig
+from rlm_extractor.extract.chunker import (
     ALL_SUPPORTED_EXTENSIONS,
-    Chunk,
-    Chunker,
     VALID_PDF_EXTENSION,
     VALID_TEXT_EXTENSIONS,
+    Chunk,
+    Chunker,
 )
-from rlm.extract.processor import ChunkProcessor, ChunkProcessingResult as ChunkResult
-from rlm.extract.schema import SchemaConverter
-from rlm.repl import REPLState
-from rlm.signatures import RootExtractionSignature
-
+from rlm_extractor.extract.processor import ChunkProcessingResult as ChunkResult
+from rlm_extractor.extract.processor import ChunkProcessor
+from rlm_extractor.extract.schema import SchemaConverter
+from rlm_extractor.repl import REPLState
+from rlm_extractor.signatures import RootExtractionSignature
 
 # Constants for user_context validation
 MIN_USER_CONTEXT_CHARS = 10
@@ -107,7 +106,7 @@ class RLMExtractor(dspy.Module):
     def extract(
         self,
         json_schema: dict,
-        document: Union[str, list[Image.Image], list[str]],
+        document: str | list[Image.Image] | list[str],
         task: str | None = None,
         user_context: str | None = None,
     ) -> ExtractionResult:
@@ -144,8 +143,17 @@ class RLMExtractor(dspy.Module):
         chunks = self._chunk_document(document, modality)
 
         # Initialize REPL state
+        # For image chunks, use placeholder strings since Root LM never sees raw input
+        input_context = (
+            document
+            if isinstance(document, str)
+            else [
+                f"Image {c.idx}" if isinstance(c.content, Image.Image) else c.content
+                for c in chunks
+            ]
+        )
         self.repl.reset_for_task(
-            input_context=document if isinstance(document, str) else [c.content for c in chunks],
+            input_context=input_context,
             yaml_schema=yaml_schema,
         )
         self.repl.set_total_chunks(len(chunks))
@@ -219,7 +227,7 @@ class RLMExtractor(dspy.Module):
     def _validate_inputs(
         self,
         json_schema: dict,
-        document: Union[str, list[Image.Image], list[str]],
+        document: str | list[Image.Image] | list[str],
     ) -> None:
         """Validate input parameters.
 
@@ -336,7 +344,7 @@ class RLMExtractor(dspy.Module):
         Returns:
             Condensed guidance (2-4 sentences) for Worker LMs
         """
-        from rlm.signatures import ContextCondensationSignature
+        from rlm_extractor.signatures import ContextCondensationSignature
 
         condenser = dspy.Predict(ContextCondensationSignature)
 
@@ -369,7 +377,7 @@ class RLMExtractor(dspy.Module):
 
         return False
 
-    def _detect_modality(self, document, pdf_mode: str = "auto") -> str:
+    def _detect_modality(self, document, pdf_mode: str = "auto") -> Literal["text", "vision"]:
         """Determine if we need vision workers.
 
         Args:
@@ -405,7 +413,7 @@ class RLMExtractor(dspy.Module):
 
     def _chunk_document(
         self,
-        document: Union[str, list[Image.Image], list[str]],
+        document: str | list[Image.Image] | list[str],
         modality: str,
     ) -> list:
         """Chunk the document for processing."""
@@ -413,6 +421,7 @@ class RLMExtractor(dspy.Module):
             # Check if it's a text file path
             if isinstance(document, str) and self._is_file_path(document):
                 return self.chunker.chunk_file(document, self.config.pdf_config)
+            assert isinstance(document, str), "Text modality requires document to be string"
             return self.chunker.chunk_text(document)
         else:
             # Vision modality - could be images, PDF, or image paths
@@ -424,6 +433,7 @@ class RLMExtractor(dspy.Module):
                 chunks = []
                 next_idx = 0
                 for path in document:
+                    assert isinstance(path, str), "Path should be string"
                     file_chunks = self.chunker.chunk_file(path, self.config.pdf_config)
                     # Adjust chunk indices to maintain sequential order
                     for chunk in file_chunks:
@@ -433,6 +443,7 @@ class RLMExtractor(dspy.Module):
                 return chunks
             else:
                 # Already PIL Images
+                assert isinstance(document, list), "Document should be list of Images"
                 return self.chunker.encode_images(document)
 
     def _process_worker_results(
@@ -563,7 +574,12 @@ class RLMExtractor(dspy.Module):
             preview = ""
             if 0 <= idx < len(chunks):
                 content = chunks[idx].content
-                preview = content[:100] if len(content) > 100 else content
+                # Handle both text chunks and image chunks
+                if isinstance(content, str):
+                    preview = content[:100] if len(content) > 100 else content
+                else:
+                    # PIL Image or dspy.Image - use placeholder
+                    preview = f"<Image {idx}>"
 
             failures.append(
                 {

@@ -1,4 +1,4 @@
-# RLM Implementation
+# RLM Extractor
 
 Recursive Language Model (RLM) implementation with schema-based information extraction.
 
@@ -39,9 +39,14 @@ Pass `pdf_mode="text"` to force text extraction from PDFs.
 
 Example:
 ```python
-from rlm import RLMExtractor, openai_config
+from rlm_extractor import RLMExtractor, RLMConfig
 
-extractor = RLMExtractor(openai_config())
+config = RLMConfig(
+    root_model="openrouter/anthropic/claude-sonnet-4",
+    worker_text_model="openrouter/anthropic/claude-haiku-4",
+    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
+)
+extractor = RLMExtractor(config)
 result = extractor.extract(
     json_schema=...,
     document="invoice.pdf",  # PDF file
@@ -91,22 +96,94 @@ export ANTHROPIC_API_KEY=sk-ant-your-key-here
 
 | Provider | Environment Variable | Models |
 |----------|---------------------|--------|
+| **OpenRouter (Recommended)** | `OPENROUTER_API_KEY` | Various (see [openrouter.ai](https://openrouter.ai/models)) |
 | OpenAI | `OPENAI_API_KEY` | `openai/gpt-4o`, `openai/gpt-4o-mini` |
 | Anthropic | `ANTHROPIC_API_KEY` | `anthropic/claude-sonnet-4`, `anthropic/claude-haiku-4` |
-| OpenRouter | `OPENROUTER_API_KEY` | Various (see [openrouter.ai](https://openrouter.ai/models)) |
 
 > **Note:** DSPy/litellm will automatically resolve the correct API key based on the model prefix. You only need to set environment variables for the providers you plan to use.
+
+## Simplest Usage
+
+The simplest way to use rlm_extractor is with the `extract()` function:
+
+```python
+from rlm_extractor import extract
+
+result = extract(
+    schema={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "email": {"type": "string"}
+        }
+    },
+    document="John Doe can be reached at john@example.com",
+)
+
+print(result.data)  # {'name': 'John Doe', 'email': 'john@example.com'}
+```
+
+**Default models used by `extract()`:**
+- Root LM: `openrouter/minimax/minimax-m2.1`
+- Worker text/vision LM: `openrouter/google/gemini-2.5-flash-lite`
+
+You can override these defaults by passing your own model parameters:
+
+```python
+result = extract(
+    schema={...},
+    document=document,
+    root_model="openrouter/anthropic/claude-sonnet-4",
+    worker_text_model="openrouter/anthropic/claude-haiku-4",
+    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
+)
+```
+
+### Customizing with Config Parameters
+
+You can override any config parameter:
+
+```python
+from rlm_extractor import extract
+
+result = extract(
+    schema={...},
+    document=large_document,
+    root_model="openrouter/anthropic/claude-sonnet-4",
+    worker_text_model="openrouter/anthropic/claude-haiku-4",
+    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
+    chunk_size=3000,  # Larger chunks
+    max_parallel_workers=10,  # More parallelism
+    max_turns=30  # More extraction rounds
+)
+```
+
+### Customizing with Config Parameters
+
+You can override any config parameter:
+
+```python
+from rlm_extractor import extract
+
+result = extract(
+    schema={...},
+    document=large_document,
+    chunk_size=3000,  # Larger chunks
+    max_parallel_workers=10,  # More parallelism
+    max_turns=30  # More extraction rounds
+)
+```
 
 ## Quick Start
 
 ```python
-from rlm import RLMExtractor, RLMConfig
+from rlm_extractor import RLMExtractor, RLMConfig
 
-# Configure (using preset)
+# Configure with your preferred models
 config = RLMConfig(
-    root_model="openai/gpt-4o",
-    worker_text_model="openai/gpt-4o-mini",
-    worker_vision_model="openai/gpt-4o",
+    root_model="openrouter/anthropic/claude-sonnet-4",
+    worker_text_model="openrouter/anthropic/claude-haiku-4",
+    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
 )
 
 # Initialize extractor
@@ -144,38 +221,47 @@ See `examples/` for complete examples:
 
 ```bash
 # Run examples with uv
-export OPENAI_API_KEY=...  # or ANTHROPIC_API_KEY
+export OPENROUTER_API_KEY=...  # or OPENAI_API_KEY, ANTHROPIC_API_KEY
 uv run python examples/demo.py
 uv run python examples/extract/invoice.py
 ```
 
 ## Configuration
 
-### Preset Configs
+### Sample Configurations
 
 ```python
-from rlm.config import openai_config, anthropic_config, cost_optimized_config, quality_config
+from rlm_extractor import RLMConfig
+
+# OpenRouter models (recommended)
+config = RLMConfig(
+    root_model="openrouter/anthropic/claude-sonnet-4",
+    worker_text_model="openrouter/anthropic/claude-haiku-4",
+    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
+)
 
 # OpenAI models
-config = openai_config()
-
-# Anthropic models
-config = anthropic_config()
-
-# Cost-optimized
-config = cost_optimized_config()
-
-# Maximum quality
-config = quality_config()
-```
-
-### Custom Config
-
-```python
 config = RLMConfig(
     root_model="openai/gpt-4o",
     worker_text_model="openai/gpt-4o-mini",
     worker_vision_model="openai/gpt-4o",
+)
+
+# Anthropic models
+config = RLMConfig(
+    root_model="anthropic/claude-sonnet-4",
+    worker_text_model="anthropic/claude-haiku-4",
+    worker_vision_model="anthropic/claude-sonnet-4",
+)
+```
+
+### Custom Config Parameters
+
+```python
+config = RLMConfig(
+    root_model="openrouter/anthropic/claude-sonnet-4",
+    worker_text_model="openrouter/anthropic/claude-haiku-4",
+    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
     chunk_size=2000,
     summary_level="standard",  # minimal/standard/verbose
     max_parallel_workers=5,

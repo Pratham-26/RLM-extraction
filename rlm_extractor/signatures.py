@@ -16,7 +16,8 @@ class ContextCondensationSignature(dspy.Signature):
 
     Example input: "Please extract all the invoice details from this PDF. The invoice number should be captured exactly as it appears, including the prefix 'INV-'. The total amount should include any tax calculations. We're particularly interested in the line items for services provided."
 
-    Example output: "Extract invoice_number (exact format with 'INV-' prefix), total_amount (including tax), and line_items for services."""
+    Example output: "Extract invoice_number (exact format with 'INV-' prefix), total_amount (including tax), and line_items for services.
+    """
 
     user_context = dspy.InputField(desc="User-provided context and instructions for extraction")
     yaml_schema = dspy.InputField(desc="YAML schema defining extraction targets")
@@ -114,7 +115,9 @@ class WorkerExtractionSignature(dspy.Signature):
     line_items_0: Consulting Services - 10 hours @ $100/hr"""
 
     yaml_schema = dspy.InputField(desc="Full YAML schema defining what to extract")
-    chunk_content = dspy.InputField(desc="Document chunk text or base64 encoded image")
+    chunk_content = dspy.InputField(
+        desc="Document chunk content - text string for text documents or dspy.Image for vision processing"
+    )
     chunk_idx = dspy.InputField(desc="Index of this chunk for reference")
     condensed_guidance = dspy.InputField(
         desc="Condensed user guidance for extraction - follow these instructions", default=""

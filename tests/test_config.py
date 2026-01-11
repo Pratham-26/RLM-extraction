@@ -1,13 +1,6 @@
 """Tests for RLMConfig."""
 
-
-from rlm.config import (
-    RLMConfig,
-    anthropic_config,
-    cost_optimized_config,
-    openai_config,
-    quality_config,
-)
+from rlm_extractor.config import RLMConfig
 
 
 class TestRLMConfig:
@@ -77,35 +70,3 @@ class TestRLMConfig:
             summary_level="minimal",
         )
         assert config.summary_level == "minimal"
-
-    def test_openai_config(self):
-        """Test OpenAI preset config."""
-        config = openai_config()
-
-        assert config.root_model == "openai/gpt-4o"
-        assert config.worker_text_model == "openai/gpt-4o-mini"
-        assert config.worker_vision_model == "openai/gpt-4o"
-
-    def test_anthropic_config(self):
-        """Test Anthropic preset config."""
-        config = anthropic_config()
-
-        assert config.root_model == "anthropic/claude-sonnet-4"
-        assert config.worker_text_model == "anthropic/claude-haiku-4"
-        assert config.worker_vision_model == "anthropic/claude-sonnet-4"
-
-    def test_cost_optimized_config(self):
-        """Test cost-optimized preset config."""
-        config = cost_optimized_config()
-
-        assert config.root_model == "anthropic/claude-haiku-4"
-        assert config.worker_text_model == "anthropic/claude-haiku-4"
-        assert config.worker_vision_model == "openai/gpt-4o-mini"
-
-    def test_quality_config(self):
-        """Test quality-focused preset config."""
-        config = quality_config()
-
-        assert config.root_model == "anthropic/claude-sonnet-4"
-        assert config.worker_text_model == "openai/gpt-4o"
-        assert config.worker_vision_model == "anthropic/claude-sonnet-4"

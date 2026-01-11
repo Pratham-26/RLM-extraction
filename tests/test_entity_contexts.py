@@ -2,8 +2,8 @@
 
 import pytest
 
-from rlm.extract.processor import ChunkProcessor
-from rlm.repl import REPLState
+from rlm_extractor.extract.processor import ChunkProcessor
+from rlm_extractor.repl import REPLState
 
 
 class TestParseEntityContexts:
@@ -91,16 +91,12 @@ class TestREPLStateEntityContexts:
 
         # Chunk 0
         state.accumulate_entity_contexts(
-            0,
-            {"customer_name": "Jane Smith in header", "invoice_number": "INV-123"},
-            "high"
+            0, {"customer_name": "Jane Smith in header", "invoice_number": "INV-123"}, "high"
         )
 
         # Chunk 1
         state.accumulate_entity_contexts(
-            1,
-            {"customer_name": "J. Smith in footer", "total": "$500"},
-            "medium"
+            1, {"customer_name": "J. Smith in footer", "total": "$500"}, "medium"
         )
 
         assert len(state.entity_contexts["customer_name"]) == 2
@@ -118,15 +114,9 @@ class TestREPLStateEntityContexts:
         state = REPLState()
 
         state.accumulate_entity_contexts(
-            0,
-            {"field1": "Description 1", "field2": "Description 2"},
-            "high"
+            0, {"field1": "Description 1", "field2": "Description 2"}, "high"
         )
-        state.accumulate_entity_contexts(
-            1,
-            {"field1": "Description 3"},
-            "medium"
-        )
+        state.accumulate_entity_contexts(1, {"field1": "Description 3"}, "medium")
 
         formatted = state.get_entity_contexts_for_root()
 
@@ -149,11 +139,7 @@ class TestREPLStateEntityContexts:
         """Test that entity_contexts are cleared on reset."""
         state = REPLState()
 
-        state.accumulate_entity_contexts(
-            0,
-            {"field1": "Description 1"},
-            "high"
-        )
+        state.accumulate_entity_contexts(0, {"field1": "Description 1"}, "high")
 
         assert len(state.entity_contexts) > 0
 

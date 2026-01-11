@@ -26,7 +26,7 @@ class REPLState:
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # The document (never seen in full by Root LM)
-    # Document as string (text mode) or list of base64 images (image mode)
+    # Document as string (text mode) or list of image placeholders (image mode)
     INPUT: str | list[str] = ""
 
     # Chunk tracking

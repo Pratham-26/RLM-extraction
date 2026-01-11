@@ -2,7 +2,7 @@
 
 import pytest
 
-from rlm.extract.chunker import Chunk, Chunker
+from rlm_extractor.extract.chunker import Chunk, Chunker
 
 
 class TestChunker:
@@ -93,7 +93,7 @@ class TestChunker:
         assert count == 3
 
     def test_encode_images(self):
-        """Test encoding images to base64."""
+        """Test storing PIL Images for DSPy vision processing."""
         from PIL import Image
 
         chunker = Chunker()
@@ -109,8 +109,8 @@ class TestChunker:
         assert len(chunks) == 2
         assert chunks[0].idx == 0
         assert chunks[1].idx == 1
-        assert chunks[0].content  # Base64 string
-        assert chunks[1].content
+        assert isinstance(chunks[0].content, Image.Image)
+        assert isinstance(chunks[1].content, Image.Image)
 
     def test_chunk_image_files(self):
         """Test loading and chunking image files."""

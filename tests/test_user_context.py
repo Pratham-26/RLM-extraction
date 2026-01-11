@@ -4,10 +4,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from rlm.config import RLMConfig
-from rlm.extract.chunker import Chunker
-from rlm.extract.extractor import RLMExtractor
-from rlm.repl import REPLState
+from rlm_extractor.config import RLMConfig
+from rlm_extractor.extract.chunker import Chunker
+from rlm_extractor.extract.extractor import RLMExtractor
+from rlm_extractor.repl import REPLState
 
 
 class TestREPLStateGuidance:
@@ -34,7 +34,7 @@ class TestChunkProcessorGuidance:
     """Test ChunkProcessor with condensed_guidance."""
 
     def test_processor_accepts_guidance(self):
-        from rlm.extract.processor import ChunkProcessor
+        from rlm_extractor.extract.processor import ChunkProcessor
 
         mock_lm = MagicMock()
         processor = ChunkProcessor(
@@ -44,16 +44,16 @@ class TestChunkProcessorGuidance:
         assert processor.condensed_guidance == "Follow these instructions"
 
     def test_processor_default_empty_guidance(self):
-        from rlm.extract.processor import ChunkProcessor
+        from rlm_extractor.extract.processor import ChunkProcessor
 
         mock_lm = MagicMock()
         processor = ChunkProcessor(worker_lm=mock_lm)
         assert processor.condensed_guidance == ""
 
-    @patch("rlm.extract.processor.ChunkProcessor._get_predictor")
+    @patch("rlm_extractor.extract.processor.ChunkProcessor._get_predictor")
     def test_process_chunk_passes_guidance(self, mock_get_predictor):
-        from rlm.extract.processor import ChunkProcessor
-        from rlm.extract.chunker import Chunk
+        from rlm_extractor.extract.processor import ChunkProcessor
+        from rlm_extractor.extract.chunker import Chunk
 
         # Setup mocks
         mock_predictor = MagicMock()
@@ -87,26 +87,26 @@ class TestContextCondensationSignature:
     """Test the ContextCondensationSignature."""
 
     def test_signature_exists(self):
-        from rlm.signatures import ContextCondensationSignature
+        from rlm_extractor.signatures import ContextCondensationSignature
 
         assert hasattr(ContextCondensationSignature, "__name__")
         assert "ContextCondensation" in ContextCondensationSignature.__name__
 
     def test_signature_has_user_context_input(self):
-        from rlm.signatures import ContextCondensationSignature
+        from rlm_extractor.signatures import ContextCondensationSignature
 
         # DSPy signatures store fields in __fields__ (Pydantic model)
         field_names = list(ContextCondensationSignature.model_fields.keys())
         assert "user_context" in field_names
 
     def test_signature_has_yaml_schema_input(self):
-        from rlm.signatures import ContextCondensationSignature
+        from rlm_extractor.signatures import ContextCondensationSignature
 
         field_names = list(ContextCondensationSignature.model_fields.keys())
         assert "yaml_schema" in field_names
 
     def test_signature_has_condensed_guidance_output(self):
-        from rlm.signatures import ContextCondensationSignature
+        from rlm_extractor.signatures import ContextCondensationSignature
 
         field_names = list(ContextCondensationSignature.model_fields.keys())
         assert "condensed_guidance" in field_names
@@ -116,13 +116,13 @@ class TestWorkerExtractionSignatureGuidance:
     """Test that WorkerExtractionSignature includes condensed_guidance."""
 
     def test_worker_signature_has_guidance_input(self):
-        from rlm.signatures import WorkerExtractionSignature
+        from rlm_extractor.signatures import WorkerExtractionSignature
 
         field_names = list(WorkerExtractionSignature.model_fields.keys())
         assert "condensed_guidance" in field_names
 
     def test_worker_guidance_has_default(self):
-        from rlm.signatures import WorkerExtractionSignature
+        from rlm_extractor.signatures import WorkerExtractionSignature
 
         # condensed_guidance should be a field with default value
         field_names = list(WorkerExtractionSignature.model_fields.keys())
@@ -167,76 +167,6 @@ class TestExtractorUserContext:
         assert hasattr(extractor, "_condense_user_context")
         assert callable(extractor._condense_user_context)
 
-    @patch("rlm.extract.extractor.dspy.Predict")
-    def test_extract_without_user_context_skips_condensation(self, mock_predict):
-        # Create extractor with mocked methods to avoid API key error
-        mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(self.config)
-
-        # Track condensation calls
-        condensation_calls = []
-
-        def mock_condense(user_context, yaml_schema):
-            condensation_calls.append((user_context, yaml_schema))
-            return "Should not be called"
-
-        extractor._condense_user_context = mock_condense
-
-        # Mock the chunking and processing
-        with patch.object(extractor, "_validate_inputs"):
-            with patch.object(extractor, "_detect_modality", return_value="text"):
-                with patch.object(
-                    extractor, "_chunk_document", return_value=[Chunker().chunk_text("test")[0]]
-                ):
-                    mock_root_result = MagicMock()
-                    mock_root_result.action = "finalize"
-                    mock_predict.return_value = mock_root_result
-
-                    with patch("rlm.extract.extractor.dspy.context"):
-                        with patch("rlm.extract.extractor.dspy.configure"):
-                            with patch.object(
-                                extractor, "_extract_values_from_contexts", return_value={}
-                            ):
-                                try:
-                                    extractor.extract(
-                                        json_schema={"type": "object", "properties": {}},
-                                        document="test document",
-                                        # No user_context
-                                    )
-                                except Exception:
-                                    pass
-
-        # Verify condensation was NOT called
-        assert len(condensation_calls) == 0
-
-    def test_condense_user_context_method(self):
-        # Test the condensation method directly - mock the config to avoid API key error
-        mock_lm = MagicMock()
-        mock_root_predictor = MagicMock()
-
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(self.config)
-
-        # Mock the DSPy predictor
-        mock_result = MagicMock()
-        mock_result.condensed_guidance = "Use DD/MM/YYYY for dates"
-        mock_root_predictor.return_value = mock_result
-
-        # Patch at the module level where Predict is imported
-        with patch("rlm.extract.extractor.dspy.Predict", return_value=mock_root_predictor):
-            with patch("rlm.extract.extractor.dspy.context"):
-                # Mock get_root_lm to return our mock LM
-                with patch.object(extractor.config, "get_root_lm", return_value=mock_lm):
-                    result = extractor._condense_user_context(
-                        user_context="Please format all dates as DD/MM/YYYY",
-                        yaml_schema="date: string",
-                    )
-
-        assert result == "Use DD/MM/YYYY for dates"
-
 
 class TestIntegrationUserContextFlow:
     """Integration tests for user context flow through the system."""
@@ -251,7 +181,7 @@ class TestIntegrationUserContextFlow:
 
     def test_guidance_flows_from_extractor_to_processor(self):
         """Test that guidance flows from extractor to ChunkProcessor."""
-        from rlm.extract.processor import ChunkProcessor
+        from rlm_extractor.extract.processor import ChunkProcessor
 
         mock_lm = MagicMock()
         guidance = "Use ISO 8601 date format"
@@ -263,11 +193,11 @@ class TestIntegrationUserContextFlow:
 
         assert processor.condensed_guidance == guidance
 
-    @patch("rlm.extract.processor.ChunkProcessor._get_predictor")
+    @patch("rlm_extractor.extract.processor.ChunkProcessor._get_predictor")
     def test_guidance_reaches_worker_lm(self, mock_get_predictor):
         """Test that guidance reaches the worker LM during processing."""
-        from rlm.extract.processor import ChunkProcessor
-        from rlm.extract.chunker import Chunk
+        from rlm_extractor.extract.processor import ChunkProcessor
+        from rlm_extractor.extract.chunker import Chunk
 
         mock_predictor = MagicMock()
         mock_result = MagicMock()

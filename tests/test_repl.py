@@ -1,7 +1,6 @@
 """Tests for REPLState."""
 
-
-from rlm.repl import REPLState
+from rlm_extractor.repl import REPLState
 
 
 class TestREPLState:

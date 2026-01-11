@@ -11,7 +11,7 @@ from typing import List
 
 from PIL import Image
 
-from rlm import RLMExtractor, RLMConfig
+from rlm_extractor import RLMExtractor, RLMConfig
 
 
 def receipt_schema() -> dict:

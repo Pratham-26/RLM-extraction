@@ -5,7 +5,7 @@ using the RLM schema extraction system.
 """
 
 import os
-from rlm import RLMExtractor, RLMConfig
+from rlm_extractor import RLMExtractor, RLMConfig
 
 
 # Sample contract document (in practice, this would be much larger)
