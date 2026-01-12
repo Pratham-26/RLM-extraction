@@ -318,7 +318,7 @@ class RLMExtractor(dspy.Module):
                     idx=result.chunk_idx,
                     gist=result.gist or "",
                     extracted=result.extracted,
-                    confidence=result.confidence,
+                    confidence=result.confidence or "medium",
                     fields_found=list(result.extracted.keys()),
                 )
             elif not result.success:

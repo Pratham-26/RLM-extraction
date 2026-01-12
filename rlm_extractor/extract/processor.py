@@ -32,6 +32,7 @@ class ChunkProcessingResult:
     gist: str | None = None
     extracted: dict | None = None
     missing_fields: list[str] | None = None
+    confidence: str | None = None
     error: str | None = None
 
 
@@ -164,6 +165,7 @@ class ChunkProcessor:
             gist = getattr(result, "gist", "")
             entity_contexts_str = getattr(result, "entity_contexts", "")
             missing_fields_str = getattr(result, "missing_fields", "")
+            confidence = getattr(result, "confidence", "medium")
 
             return ChunkProcessingResult(
                 success=True,
@@ -171,6 +173,7 @@ class ChunkProcessor:
                 gist=gist or f"Chunk {chunk_idx} processed",
                 extracted=self._parse_entity_contexts(entity_contexts_str),
                 missing_fields=self._parse_missing_fields(missing_fields_str),
+                confidence=confidence,
             )
 
         except Exception as e:
