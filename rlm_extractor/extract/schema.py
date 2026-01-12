@@ -9,21 +9,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def json_to_yaml(json_schema: dict) -> str:
+def json_to_yaml(json_schema: dict, compact: bool = False) -> str:
     """Convert JSON Schema to YAML format optimized for LM comprehension.
 
     Args:
         json_schema: JSON Schema as a dict
+        compact: If True, use compact format with minimal descriptions to save tokens
 
     Returns:
         YAML string with type hints, descriptions, and clear structure
     """
     yaml_lines = ["# Extraction Schema", "# Extract the following fields from the document:\n"]
-    _convert_schema_node(json_schema, yaml_lines, level=0)
+    _convert_schema_node(json_schema, yaml_lines, level=0, compact=compact)
     return "\n".join(yaml_lines)
 
 
-def _convert_schema_node(schema: dict, output: list[str], level: int = 0, name: str = "") -> None:
+def _convert_schema_node(schema: dict, output: list[str], level: int = 0, name: str = "", compact: bool = False) -> None:
     """Recursively convert a schema node to YAML representation."""
     indent = "  " * level
 
@@ -34,11 +35,12 @@ def _convert_schema_node(schema: dict, output: list[str], level: int = 0, name: 
     description = schema.get("description", "")
     title = schema.get("title", "")
 
-    # Add metadata as comments
-    if title:
-        output.append(f"{indent}  # Title: {title}")
-    if description:
-        output.append(f"{indent}  # Description: {description}")
+    # Add metadata as comments (skip in compact mode for nested fields)
+    if not compact or level == 0:
+        if title:
+            output.append(f"{indent}  # Title: {title}")
+        if description:
+            output.append(f"{indent}  # Description: {description}")
 
     if schema_type == "object":
         properties = schema.get("properties", {})
@@ -62,19 +64,23 @@ def _convert_schema_node(schema: dict, output: list[str], level: int = 0, name: 
             if prop_enum:
                 type_comment += f" (enum: {', '.join(map(str, prop_enum))})"
 
-            output.append(f"{indent}  # {prop_name}: {type_comment}{req_marker}")
-            if prop_desc:
-                output.append(f"{indent}  #   {prop_desc}")
+            # In compact mode, just show type and required status
+            if compact and level > 0:
+                output.append(f"{indent}  # {prop_name}: {type_comment}{req_marker}")
+            else:
+                output.append(f"{indent}  # {prop_name}: {type_comment}{req_marker}")
+                if prop_desc:
+                    output.append(f"{indent}  #   {prop_desc}")
 
             if prop_type == "object" and "properties" in prop_schema:
                 output.append(f"{indent}  {prop_name}:")
-                _convert_schema_node(prop_schema, output, level + 2, "")
+                _convert_schema_node(prop_schema, output, level + 2, "", compact=compact)
             elif prop_type == "array":
                 items = prop_schema.get("items", {})
                 output.append(f"{indent}  {prop_name}:")
                 if isinstance(items, dict) and "properties" in items:
                     output.append(f"{indent}    - # Array of objects with:")
-                    _convert_schema_node(items, output, level + 3, "")
+                    _convert_schema_node(items, output, level + 3, "", compact=compact)
                 else:
                     item_type = items.get("type", "string") if isinstance(items, dict) else "string"
                     output.append(f"{indent}    - # Array of {item_type}")
@@ -89,7 +95,7 @@ def _convert_schema_node(schema: dict, output: list[str], level: int = 0, name: 
         items = schema.get("items", {})
         output.append(f"{indent}  # Array of:")
         if isinstance(items, dict):
-            _convert_schema_node(items, output, level, "")
+            _convert_schema_node(items, output, level, "", compact=compact)
 
 
 def yaml_to_json(json_str: str, schema: dict) -> dict:

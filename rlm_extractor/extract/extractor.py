@@ -125,8 +125,8 @@ class RLMExtractor(dspy.Module):
         # Initialize logger
         logger = CallLogger()
 
-        # Convert schema
-        yaml_schema = json_to_yaml(json_schema)
+        # Convert schema (use compact mode if configured for efficiency)
+        yaml_schema = json_to_yaml(json_schema, compact=self.config.compact_schema)
 
         # Chunk the document
         chunks = self._chunk_document(document)
@@ -154,6 +154,7 @@ class RLMExtractor(dspy.Module):
             max_parallel_workers=self.config.max_parallel_workers,
             condensed_guidance=condensed_guidance,
             logger=logger,
+            chunk_timeout=self.config.chunk_timeout,
         )
 
         # Set default task
@@ -194,11 +195,8 @@ class RLMExtractor(dspy.Module):
                 if turn >= self.config.max_turns - 1:
                     break
 
-        # Convert results back to JSON
-        final_json = yaml_to_json(
-            json.dumps(self.repl.results_so_far),
-            json_schema,
-        )
+        # Convert entity contexts to final JSON
+        final_json = self._convert_entity_contexts_to_json(json_schema, logger)
 
         # Compile failures
         failures = self._compile_failures(chunks)
@@ -462,3 +460,161 @@ class RLMExtractor(dspy.Module):
         # DSPy tracks usage when configured with track_usage=True
         # For now, return placeholder
         return {"root": 0, "worker": 0, "total": 0}
+
+    def _convert_entity_contexts_to_json(self, json_schema: dict, logger: CallLogger) -> dict:
+        """Convert accumulated entity contexts to structured JSON.
+
+        This method uses the Root LM to parse the natural language entity
+        contexts and extract the actual structured values matching the schema.
+
+        Args:
+            json_schema: The JSON Schema defining expected output structure
+            logger: Call logger for tracking LM calls
+
+        Returns:
+            Dictionary with extracted values matching the schema
+        """
+        import json
+
+        # If we have entity contexts, use Root LM to extract values
+        if self.repl.entity_contexts:
+            return self._extract_values_from_contexts(json_schema, logger)
+
+        # Otherwise, fall back to results_so_far
+        return yaml_to_json(
+            json.dumps(self.repl.results_so_far),
+            json_schema,
+        )
+
+    def _extract_values_from_contexts(self, json_schema: dict, logger: CallLogger) -> dict:
+        """Use Root LM to extract structured values from entity contexts.
+
+        Args:
+            json_schema: The JSON Schema defining expected output structure
+            logger: Call logger for tracking LM calls
+
+        Returns:
+            Dictionary with extracted values matching the schema
+        """
+        import json
+
+        from rlm_extractor.signatures import RootValueExtractionSignature
+
+        # Format entity contexts for the Root LM
+        entity_contexts_str = self._format_entity_contexts_for_lm()
+
+        # Get chunk summaries for context
+        chunk_summaries_str = "\n".join([
+            f"Chunk {s['idx']}: {s['gist']}"
+            for s in self.repl.chunk_summaries
+        ])
+
+        # Get field completion status
+        field_completion = self.repl.get_field_completion_summary()
+
+        # Log request
+        root_lm = self.config.root_lm
+        call_id = logger.log_request(
+            lm_type="root",
+            model=str(root_lm),
+            signature="RootValueExtractionSignature",
+            call_type="value_extraction",
+            request={
+                "entity_contexts": entity_contexts_str[:500],
+                "chunk_summaries": chunk_summaries_str[:200],
+                "field_completion": field_completion,
+            },
+        )
+
+        # Create predictor and call Root LM
+        predictor = dspy.Predict(RootValueExtractionSignature)
+
+        with dspy.context(lm=root_lm):
+            result = predictor(
+                yaml_schema=json_to_yaml(json_schema, compact=self.config.compact_schema),
+                entity_contexts_all=entity_contexts_str,
+                chunk_summaries=chunk_summaries_str,
+                field_completion=field_completion,
+            )
+
+        # Log response
+        extracted_values = getattr(result, "extracted_values", "")
+        logger.log_response(
+            call_id=call_id,
+            response={
+                "extracted_values": extracted_values[:500],
+                "extraction_notes": getattr(result, "extraction_notes", ""),
+            },
+        )
+
+        # Parse the YAML output back to JSON
+        return self._parse_extracted_values_to_json(extracted_values, json_schema)
+
+    def _format_entity_contexts_for_lm(self) -> str:
+        """Format entity contexts for Root LM consumption.
+
+        Returns:
+            Formatted string with all entity contexts
+        """
+        if not self.repl.entity_contexts:
+            return "No entity contexts collected."
+
+        lines = ["Entity Contexts from all chunks:", ""]
+
+        for field_name in sorted(self.repl.entity_contexts.keys()):
+            contexts = self.repl.entity_contexts[field_name]
+            lines.append(f"{field_name}:")
+
+            for chunk_idx, description, conf in contexts:
+                lines.append(f"  - [Chunk {chunk_idx}, confidence={conf}] {description}")
+
+            lines.append("")  # Blank line between fields
+
+        return "\n".join(lines)
+
+    def _parse_extracted_values_to_json(self, yaml_str: str, json_schema: dict) -> dict:
+        """Parse extracted values from YAML string to JSON.
+
+        Args:
+            yaml_str: YAML string from Root LM
+            json_schema: JSON Schema for validation
+
+        Returns:
+            Dictionary matching the schema
+        """
+        import json
+        import re
+
+        if not yaml_str or yaml_str.strip() in ("", "none", "null"):
+            return {}
+
+        # Try to parse as YAML first
+        try:
+            import yaml
+            parsed = yaml.safe_load(yaml_str)
+            if isinstance(parsed, dict):
+                return yaml_to_json(json.dumps(parsed), json_schema)
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
+        # Try JSON
+        try:
+            parsed = json.loads(yaml_str)
+            if isinstance(parsed, dict):
+                return yaml_to_json(json.dumps(parsed), json_schema)
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback: try to extract JSON from markdown code blocks
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", yaml_str, re.DOTALL)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group(1))
+                return yaml_to_json(json.dumps(parsed), json_schema)
+            except json.JSONDecodeError:
+                pass
+
+        # If all parsing fails, return empty with the raw output for debugging
+        return {"_raw_output": yaml_str, "_parsing_error": "Could not parse output as JSON/YAML"}

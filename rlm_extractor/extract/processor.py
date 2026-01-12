@@ -46,12 +46,14 @@ class ChunkProcessor:
         max_attempts: int = 2,
         condensed_guidance: str = "",
         logger: CallLogger | None = None,
+        chunk_timeout: int = 600,
     ):
         self.worker_lm = worker_lm
         self.max_parallel_workers = max_parallel_workers
         self.max_attempts = max_attempts
         self.condensed_guidance = condensed_guidance
         self.logger = logger
+        self.chunk_timeout = chunk_timeout
 
         # Create DSPy predictor for worker with LM context
         with dspy.context(lm=self.worker_lm):
@@ -252,10 +254,10 @@ class ChunkProcessor:
                 for chunk in chunks
             }
 
-            for future in as_completed(future_to_chunk, timeout=300):
+            for future in as_completed(future_to_chunk, timeout=self.chunk_timeout * 2):
                 chunk = future_to_chunk[future]
                 try:
-                    result = future.result(timeout=120)
+                    result = future.result(timeout=self.chunk_timeout)
                     results.append(result)
                 except TimeoutError:
                     results.append(self._error_result(chunk.idx, "Timeout"))

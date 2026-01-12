@@ -1,5 +1,11 @@
 """RLM Configuration - Dual LM setup for text-based extraction."""
 
+import warnings
+
+# Suppress Pydantic serialization warnings from litellm (must be before dspy import)
+# litellm's internal Message schema (10 fields) doesn't match OpenAI's ChatCompletionMessage (7 fields)
+warnings.filterwarnings("ignore", category=UserWarning, message=".*Pydantic serializer warnings.*")
+
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -23,8 +29,8 @@ class RLMConfig:
     worker_text_model: str
 
     # LM parameters
-    root_max_tokens: int = 8192
-    worker_max_tokens: int = 4096
+    root_max_tokens: int = 65536
+    worker_max_tokens: int = 8192
     temperature: float = 0.3
 
     # Chunking
@@ -41,12 +47,16 @@ class RLMConfig:
     # Execution limits
     max_turns: int = 5
     code_execution_timeout: int = 30
+    chunk_timeout: int = 600  # Timeout per chunk in seconds (default: 10 minutes)
 
     # User context limits
     max_user_context_chars: int = 10_000
 
     # Retry limits
     max_retries: int = 3
+
+    # Context efficiency
+    compact_schema: bool = False  # Use compact YAML schema to save tokens
 
     # Internal state
     _root_lm: dspy.LM = field(init=False, repr=False)
@@ -64,7 +74,7 @@ class RLMConfig:
 
     def _create_lm(self, model_name: str, max_tokens: int) -> dspy.LM:
         """Create a DSPy LM instance."""
-        return dspy.LM(model_name, max_tokens=max_tokens, temperature=self.temperature)
+        return dspy.LM(model_name, max_tokens=max_tokens, temperature=self.temperature, cache=False)
 
     def _configure_lms(self) -> None:
         """Configure both LMs and set root as DSPy default."""
