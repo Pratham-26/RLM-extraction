@@ -94,9 +94,7 @@ class ChunkProcessor:
             }
             self.logger.log_response(call_id=call_id, response=response_payload)
 
-    def _log_error(
-        self, call_id: str | None, chunk: Chunk, error: str, attempt: int
-    ) -> None:
+    def _log_error(self, call_id: str | None, chunk: Chunk, error: str, attempt: int) -> None:
         """Log LLM error if logger available."""
         if self.logger and call_id:
             self.logger.log_error(
@@ -147,9 +145,7 @@ class ChunkProcessor:
                 current_prompt = self._get_retry_prompt(error_msg)
 
         # Should not reach here
-        return ChunkProcessingResult(
-            success=False, chunk_idx=chunk.idx, error="Unknown error"
-        )
+        return ChunkProcessingResult(success=False, chunk_idx=chunk.idx, error="Unknown error")
 
     def _get_retry_prompt(self, error_msg: str) -> str:
         """Generate prompt for retry attempt."""
@@ -236,9 +232,7 @@ class ChunkProcessor:
 
     def _error_result(self, chunk_idx: int, error: str) -> ChunkProcessingResult:
         """Create an error result."""
-        return ChunkProcessingResult(
-            success=False, chunk_idx=chunk_idx, error=error
-        )
+        return ChunkProcessingResult(success=False, chunk_idx=chunk_idx, error=error)
 
     def process_chunks_parallel(
         self,

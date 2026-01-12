@@ -123,9 +123,7 @@ class WorkerExtractionSignature(dspy.Signature):
     line_items_0: Consulting Services - 10 hours @ $100/hr"""
 
     yaml_schema = dspy.InputField(desc="Full YAML schema defining what to extract")
-    chunk_content = dspy.InputField(
-        desc="Document chunk content - text string"
-    )
+    chunk_content = dspy.InputField(desc="Document chunk content - text string")
     chunk_idx = dspy.InputField(desc="Index of this chunk for reference")
     condensed_guidance = dspy.InputField(
         desc="Condensed user guidance for extraction - follow these instructions", default=""

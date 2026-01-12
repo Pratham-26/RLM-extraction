@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 import dspy
 
 from rlm_extractor.config import RLMConfig
-from rlm_extractor.extract.chunker import SUPPORTED_EXTENSIONS, Chunk, chunk_file, chunk_text
+from rlm_extractor.extract.chunker import Chunk, chunk_file, chunk_text
 from rlm_extractor.extract.processor import ChunkProcessingResult as ChunkResult
 from rlm_extractor.extract.processor import ChunkProcessor
 from rlm_extractor.extract.schema import json_to_yaml, yaml_to_json
@@ -132,10 +132,7 @@ class RLMExtractor(dspy.Module):
         chunks = self._chunk_document(document)
 
         # Initialize REPL state
-        input_context = (
-            document if isinstance(document, str)
-            else [c.content for c in chunks]
-        )
+        input_context = document if isinstance(document, str) else [c.content for c in chunks]
         self.repl.reset_for_task(
             input_context=input_context,
             yaml_schema=yaml_schema,
@@ -240,9 +237,7 @@ class RLMExtractor(dspy.Module):
         if isinstance(document, list) and not document:
             raise ValueError("document list cannot be empty")
 
-    def _prepare_user_context(
-        self, user_context: str, yaml_schema: str, logger: CallLogger
-    ) -> str:
+    def _prepare_user_context(self, user_context: str, yaml_schema: str, logger: CallLogger) -> str:
         """Validate, sanitize, and condense user context."""
         # Validate
         if not isinstance(user_context, str):
@@ -290,8 +285,10 @@ class RLMExtractor(dspy.Module):
         """Chunk the document for processing."""
         if isinstance(document, str):
             # Check if it's a file path (exists or reasonable path length)
-            is_file = document and len(document) <= 1024 and (
-                os.path.exists(document) or os.path.exists(os.path.abspath(document))
+            is_file = (
+                document
+                and len(document) <= 1024
+                and (os.path.exists(document) or os.path.exists(os.path.abspath(document)))
             )
             if is_file:
                 return chunk_file(document, self.chunk_size)

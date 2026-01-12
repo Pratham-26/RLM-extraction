@@ -20,6 +20,7 @@ MAX_WORD_BOUNDARY_SEARCH = 100
 @dataclass
 class Chunk:
     """A single chunk of a document."""
+
     idx: int
     content: str
     start: int | None = None
@@ -64,10 +65,7 @@ def _load_text_file(file_path: str) -> str:
 
     ext = os.path.splitext(abs_path)[1].lower()
     if ext not in {".txt", ".md"}:
-        raise ValueError(
-            f"Invalid text file type: {file_path}. "
-            f"Supported: .txt, .md"
-        )
+        raise ValueError(f"Invalid text file type: {file_path}. Supported: .txt, .md")
 
     # Use utf-8 with error replacement for robustness
     return Path(abs_path).read_text(encoding="utf-8", errors="replace")
@@ -102,6 +100,5 @@ def chunk_file(file_path: str, chunk_size: int = 2000) -> list[Chunk]:
         return chunk_text(content, chunk_size)
     else:
         raise ValueError(
-            f"Unsupported file type: {ext}\n"
-            f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+            f"Unsupported file type: {ext}\nSupported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
