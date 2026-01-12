@@ -12,22 +12,19 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Literal
 
 import dspy
-from PIL import Image
 
 from rlm_extractor.config import RLMConfig
 from rlm_extractor.extract.chunker import (
     ALL_SUPPORTED_EXTENSIONS,
-    VALID_PDF_EXTENSION,
-    VALID_TEXT_EXTENSIONS,
     Chunk,
     Chunker,
 )
 from rlm_extractor.extract.processor import ChunkProcessingResult as ChunkResult
 from rlm_extractor.extract.processor import ChunkProcessor
 from rlm_extractor.extract.schema import SchemaConverter
+from rlm_extractor.logger import CallLogger
 from rlm_extractor.repl import REPLState
 from rlm_extractor.signatures import RootExtractionSignature
 
@@ -54,6 +51,9 @@ class ExtractionResult:
     # Token consumption: {root: int, worker: int, total: int}
     token_usage: dict = field(default_factory=dict)
 
+    # Path to LLM call log file (JSON Lines format)
+    log_file_path: str | None = None
+
     def is_complete(self) -> bool:
         """True if extraction has no failures."""
         return len(self.failures) == 0
@@ -72,7 +72,6 @@ class RLMExtractor(dspy.Module):
         config = RLMConfig(
             root_model="openai/gpt-4o",
             worker_text_model="openai/gpt-4o-mini",
-            worker_vision_model="openai/gpt-4o",
         )
         extractor = RLMExtractor(config)
 
@@ -106,7 +105,7 @@ class RLMExtractor(dspy.Module):
     def extract(
         self,
         json_schema: dict,
-        document: str | list[Image.Image] | list[str],
+        document: str | list[str],
         task: str | None = None,
         user_context: str | None = None,
     ) -> ExtractionResult:
@@ -114,8 +113,7 @@ class RLMExtractor(dspy.Module):
 
         Args:
             json_schema: JSON Schema defining what to extract
-            document: Text string, list of PIL Images, or list of file paths.
-                File paths can be .txt, .md, .pdf, or image files (.png, .jpg, etc.)
+            document: Text string or list of file paths (.txt, .md, or .pdf)
             task: Optional custom task description
             user_context: Optional user-provided context and instructions.
                 The Root LM will condense this into extraction guidance for workers.
@@ -130,27 +128,22 @@ class RLMExtractor(dspy.Module):
         # Validate inputs
         self._validate_inputs(json_schema, document)
 
-        # Detect input modality
-        modality = self._detect_modality(document)
+        # Get worker LM
+        worker_lm = self.config.get_worker_lm()
 
-        # Get appropriate worker LM
-        worker_lm = self.config.get_worker_lm(modality)
+        # Initialize logger
+        logger = CallLogger()
 
         # Convert schema
         yaml_schema = self.schema_converter.json_to_yaml_chunks(json_schema)
 
         # Chunk the document
-        chunks = self._chunk_document(document, modality)
+        chunks = self._chunk_document(document)
 
         # Initialize REPL state
-        # For image chunks, use placeholder strings since Root LM never sees raw input
         input_context = (
-            document
-            if isinstance(document, str)
-            else [
-                f"Image {c.idx}" if isinstance(c.content, Image.Image) else c.content
-                for c in chunks
-            ]
+            document if isinstance(document, str)
+            else [c.content for c in chunks]
         )
         self.repl.reset_for_task(
             input_context=input_context,
@@ -166,7 +159,7 @@ class RLMExtractor(dspy.Module):
         if user_context:
             self._validate_user_context(user_context)
             sanitized_context = self._sanitize_user_context(user_context)
-            condensed_guidance = self._condense_user_context(sanitized_context, yaml_schema)
+            condensed_guidance = self._condense_user_context(sanitized_context, yaml_schema, logger)
             self.repl.set_condensed_guidance(condensed_guidance)
 
         # Create chunk processor
@@ -174,6 +167,7 @@ class RLMExtractor(dspy.Module):
             worker_lm=worker_lm,
             max_parallel_workers=self.config.max_parallel_workers,
             condensed_guidance=condensed_guidance,
+            logger=logger,
         )
 
         # Set default task
@@ -187,22 +181,32 @@ class RLMExtractor(dspy.Module):
             # First turn: run parallel extraction
             if turn == 0 and self.config.parallel_first_pass:
                 results = processor.process_chunks_parallel(chunks, yaml_schema)
+                # Process results
+                self._process_worker_results(results, chunks)
+                trajectory.append(self._create_trajectory_entry(results))
+
+                # Calculate success rate
+                success_count = sum(1 for r in results if r.success)
+                success_rate = success_count / max(len(results), 1)
+
+                # If high success rate, skip root LM and finalize immediately
+                # This is the most common case and avoids expensive root orchestration
+                if success_rate >= 0.8:
+                    break
+
             else:
-                # Subsequent turns handled by root LM decisions
+                # Only enter root LM decision loop if first pass had issues
                 action_result = self._process_root_decision(
-                    task, trajectory, yaml_schema, processor, chunks
+                    task, trajectory, yaml_schema, processor, chunks, logger
                 )
+                trajectory.append({"action": action_result, "turn": turn})
+
                 if action_result == "finalize":
                     break
-                continue
 
-            # Process results
-            self._process_worker_results(results, chunks)
-            trajectory.append(self._create_trajectory_entry(results))
-
-            # Check if we should finalize
-            if self._should_finalize(results):
-                break
+                # Force finalize after max turns to prevent infinite loops
+                if turn >= self.config.max_turns - 1:
+                    break
 
         # Convert results back to JSON
         final_json = self.schema_converter.yaml_to_json(
@@ -216,18 +220,23 @@ class RLMExtractor(dspy.Module):
         # Get token usage
         usage = self._get_token_usage()
 
+        # Close logger and get file path
+        logger.close()
+        log_path = str(logger.get_log_file_path())
+
         return ExtractionResult(
             data=final_json,
             chunk_gists=self.repl.chunk_summaries,
             failures=failures,
             turns=turn + 1,
             token_usage=usage,
+            log_file_path=log_path,
         )
 
     def _validate_inputs(
         self,
         json_schema: dict,
-        document: str | list[Image.Image] | list[str],
+        document: str | list[str],
     ) -> None:
         """Validate input parameters.
 
@@ -269,9 +278,9 @@ class RLMExtractor(dspy.Module):
 
             # Validate list element types
             first = document[0]
-            if not isinstance(first, (Image.Image, str)):
+            if not isinstance(first, str):
                 raise TypeError(
-                    f"document list must contain PIL.Image or str (image paths), "
+                    f"document list must contain str (file paths), "
                     f"got {type(first).__name__}"
                 )
 
@@ -284,7 +293,7 @@ class RLMExtractor(dspy.Module):
                     )
         else:
             raise TypeError(
-                f"document must be str, list[PIL.Image], or list[str], "
+                f"document must be str or list[str] (file paths), "
                 f"got {type(document).__name__}"
             )
 
@@ -334,12 +343,15 @@ class RLMExtractor(dspy.Module):
         sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
         return sanitized.strip()
 
-    def _condense_user_context(self, user_context: str, yaml_schema: str) -> str:
+    def _condense_user_context(
+        self, user_context: str, yaml_schema: str, logger: CallLogger
+    ) -> str:
         """Have Root LM condense user context into extraction guidance.
 
         Args:
             user_context: User-provided context and instructions
             yaml_schema: YAML schema for extraction
+            logger: CallLogger instance
 
         Returns:
             Condensed guidance (2-4 sentences) for Worker LMs
@@ -348,8 +360,24 @@ class RLMExtractor(dspy.Module):
 
         condenser = dspy.Predict(ContextCondensationSignature)
 
-        with dspy.context(lm=self.config.get_root_lm()):
+        # Log request
+        root_lm = self.config.get_root_lm()
+        call_id = logger.log_request(
+            lm_type="root",
+            model=str(root_lm),
+            signature="ContextCondensationSignature",
+            call_type="context_condensation",
+            request={"user_context": user_context, "yaml_schema": yaml_schema},
+        )
+
+        with dspy.context(lm=root_lm):
             result = condenser(user_context=user_context, yaml_schema=yaml_schema)
+
+        # Log response
+        logger.log_response(
+            call_id=call_id,
+            response={"condensed_guidance": getattr(result, "condensed_guidance", "")},
+        )
 
         return getattr(result, "condensed_guidance", "")
 
@@ -377,74 +405,28 @@ class RLMExtractor(dspy.Module):
 
         return False
 
-    def _detect_modality(self, document, pdf_mode: str = "auto") -> Literal["text", "vision"]:
-        """Determine if we need vision workers.
-
-        Args:
-            document: The document to process
-            pdf_mode: PDF processing mode ('text', 'image', or 'auto')
-
-        Returns:
-            'text' or 'vision'
-        """
+    def _chunk_document(
+        self,
+        document: str | list[str],
+    ) -> list:
+        """Chunk the document for processing."""
         if isinstance(document, str):
             # Check if it's a file path
             if self._is_file_path(document):
-                ext = os.path.splitext(document)[1].lower()
-                if ext in VALID_TEXT_EXTENSIONS:
-                    return "text"
-                elif ext in VALID_PDF_EXTENSION:
-                    # PDF file - check pdf_mode
-                    if pdf_mode == "text":
-                        return "text"
-                    else:
-                        # 'image' or 'auto' both use vision for PDFs
-                        return "vision"
-                # Unknown extension - default to text, will fail later if invalid
-                return "text"
-            return "text"
-        elif isinstance(document, list):
-            if document and isinstance(document[0], Image.Image):
-                return "vision"
-            elif document and isinstance(document[0], str):
-                # Could be image paths - assume vision
-                return "vision"
-        return "text"  # default
-
-    def _chunk_document(
-        self,
-        document: str | list[Image.Image] | list[str],
-        modality: str,
-    ) -> list:
-        """Chunk the document for processing."""
-        if modality == "text":
-            # Check if it's a text file path
-            if isinstance(document, str) and self._is_file_path(document):
-                return self.chunker.chunk_file(document, self.config.pdf_config)
-            assert isinstance(document, str), "Text modality requires document to be string"
+                return self.chunker.chunk_file(document)
             return self.chunker.chunk_text(document)
         else:
-            # Vision modality - could be images, PDF, or image paths
-            if isinstance(document, str) and self._is_file_path(document):
-                # Single file path (PDF or image)
-                return self.chunker.chunk_file(document, self.config.pdf_config)
-            elif isinstance(document, list) and document and isinstance(document[0], str):
-                # List of file paths - may include PDFs and images
-                chunks = []
-                next_idx = 0
-                for path in document:
-                    assert isinstance(path, str), "Path should be string"
-                    file_chunks = self.chunker.chunk_file(path, self.config.pdf_config)
-                    # Adjust chunk indices to maintain sequential order
-                    for chunk in file_chunks:
-                        chunk.idx = next_idx
-                        next_idx += 1
-                    chunks.extend(file_chunks)
-                return chunks
-            else:
-                # Already PIL Images
-                assert isinstance(document, list), "Document should be list of Images"
-                return self.chunker.encode_images(document)
+            # List of file paths
+            chunks = []
+            next_idx = 0
+            for path in document:
+                file_chunks = self.chunker.chunk_file(path)
+                # Adjust chunk indices to maintain sequential order
+                for chunk in file_chunks:
+                    chunk.idx = next_idx
+                    next_idx += 1
+                chunks.extend(file_chunks)
+            return chunks
 
     def _process_worker_results(
         self,
@@ -479,11 +461,14 @@ class RLMExtractor(dspy.Module):
 
     def _should_finalize(self, results: list[ChunkResult]) -> bool:
         """Determine if we should finalize extraction."""
-        # All chunks processed and acceptable success rate
+        # Finalize if all chunks processed successfully
         completion_rate = self.repl.get_completion_rate()
-        failure_rate = len(self.repl.failed_chunks) / max(self.repl.total_chunks, 1)
+        success_count = sum(1 for r in results if r.success)
+        total = len(results)
+        success_rate = success_count / max(total, 1)
 
-        return completion_rate >= 1.0 or failure_rate < 0.1
+        # Finalize if 100% complete OR if >80% success rate
+        return completion_rate >= 1.0 or success_rate >= 0.8
 
     def _process_root_decision(
         self,
@@ -492,6 +477,7 @@ class RLMExtractor(dspy.Module):
         yaml_schema: str,
         processor: ChunkProcessor,
         chunks: list[Chunk],
+        logger: CallLogger,
     ) -> str:
         """Process Root LM decision for next action."""
         # Format trajectory for Root LM
@@ -500,8 +486,28 @@ class RLMExtractor(dspy.Module):
         # Get field completion summary
         field_completion = self.repl.get_field_completion_summary()
 
+        # Log request
+        root_lm = self.config.get_root_lm()
+        request_payload = {
+            "task": task,
+            "trajectory": trajectory_str,
+            "state_summary": self.repl.get_state_summary(),
+            "chunk_summaries": self.repl.get_chunk_summaries_preview(),
+            "results_preview": self.repl.get_results_preview(),
+            "field_completion": field_completion,
+            "retry_summary": self.repl.get_retry_summary(),
+            "max_retries": self.config.max_retries,
+        }
+        call_id = logger.log_request(
+            lm_type="root",
+            model=str(root_lm),
+            signature="RootExtractionSignature",
+            call_type="root_decision",
+            request=request_payload,
+        )
+
         # Call Root LM
-        with dspy.context(lm=self.config.get_root_lm()):
+        with dspy.context(lm=root_lm):
             result = self.root_predictor(
                 task=task,
                 trajectory=trajectory_str,
@@ -509,7 +515,20 @@ class RLMExtractor(dspy.Module):
                 chunk_summaries=self.repl.get_chunk_summaries_preview(),
                 results_preview=self.repl.get_results_preview(),
                 field_completion=field_completion,
+                retry_summary=self.repl.get_retry_summary(),
+                max_retries=self.config.max_retries,
             )
+
+        # Log response
+        logger.log_response(
+            call_id=call_id,
+            response={
+                "thought": getattr(result, "thought", ""),
+                "action": getattr(result, "action", ""),
+                "target_chunk": getattr(result, "target_chunk", ""),
+                "targeted_prompt": getattr(result, "targeted_prompt", ""),
+            },
+        )
 
         # Parse action
         action = getattr(result, "action", "finalize").lower()
@@ -574,12 +593,7 @@ class RLMExtractor(dspy.Module):
             preview = ""
             if 0 <= idx < len(chunks):
                 content = chunks[idx].content
-                # Handle both text chunks and image chunks
-                if isinstance(content, str):
-                    preview = content[:100] if len(content) > 100 else content
-                else:
-                    # PIL Image or dspy.Image - use placeholder
-                    preview = f"<Image {idx}>"
+                preview = content[:100] if len(content) > 100 else content
 
             failures.append(
                 {

@@ -87,7 +87,6 @@ def main():
     config = RLMConfig(
         root_model="openrouter/anthropic/claude-sonnet-4",
         worker_text_model="openrouter/anthropic/claude-haiku-4",
-        worker_vision_model="openrouter/anthropic/claude-sonnet-4",
         chunk_size=1500,
         max_parallel_workers=3,
     )
@@ -120,6 +119,9 @@ def main():
 
     print(f"\nStats: {result.turns} turns, {len(result.chunk_gists)} chunks")
     print(f"Complete: {result.is_complete()}")
+
+    if result.log_file_path:
+        print(f"\nLog file: {result.log_file_path}")
 
     if result.failures:
         print(f"\nFailures: {len(result.failures)}")

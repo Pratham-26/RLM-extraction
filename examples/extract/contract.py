@@ -202,7 +202,6 @@ def main():
     config = RLMConfig(
         root_model="anthropic/claude-sonnet-4",
         worker_text_model="anthropic/claude-haiku-4",
-        worker_vision_model="anthropic/claude-sonnet-4",
         chunk_size=2500,  # Larger chunks for contract
         summary_level="standard",
     )

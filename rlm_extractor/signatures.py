@@ -32,31 +32,39 @@ class ContextCondensationSignature(dspy.Signature):
 class RootExtractionSignature(dspy.Signature):
     """You are orchestrating schema extraction from a document.
 
+    IMPORTANT: Prefer 'finalize' over 're_extract'. Only re-extract when absolutely necessary.
+
     Analyze the extraction progress and decide:
-    1. If key fields are missing, issue a 're_extract' action targeting the relevant chunk
-    2. If extraction is complete, issue 'finalize' action
+    1. If ALL required fields are found -> IMMEDIATELY finalize (even with medium confidence)
+    2. If ONLY optional fields are missing -> finalize (do NOT re-extract for optional fields)
+    3. If critical required fields are missing AND a chunk likely contains them -> re_extract
 
-    Prioritize re-extraction for: required fields, high-value data, conflicting information.
+    FINALIZE when:
+    - All required fields are found (any confidence level is acceptable)
+    - Only optional fields are missing
+    - Re-extraction attempts have been made without finding new required fields
+    - Chunks have already been processed and no new information is expected
 
-    Finalize when all required fields are found with medium or higher confidence,
-    or after max_retries re-extraction attempts without improvement.
+    RE-EXTRACT only when:
+    - A REQUIRED field is completely missing (not found in any chunk)
+    - You have strong evidence the field exists in a specific unprocessed/poorly-processed chunk
+    - Retry count for that chunk is below max_retries
 
-    Re-extraction priority guide:
-    - Required fields missing: always re-extract
-    - Required fields with low confidence: re-extract if retry count < max_retries
-    - High-value optional fields missing: re-extract if mentioned in > 1 chunk (infer value from field names/schema)
-    - Conflicting values: re-extract chunks with conflicting info
-    - Medium confidence required fields: acceptable, skip re-extraction
+    DO NOT re-extract:
+    - For optional fields
+    - To improve confidence on already-found fields
+    - When all required fields have values (even if incomplete)
+    - On chunks that have already been re-extracted without improvement
 
-    Example: Re-extraction scenario
+    Example: Finalize scenario (PREFERRED)
     - Schema requires: invoice_number, date, total_amount
-    - State: invoice_number found (high confidence), date found (low confidence), total_amount missing
-    - Decision: re_extract chunk 3 with prompt "Extract total_amount and verify date"
+    - State: all required fields found with medium confidence
+    - Decision: finalize (do NOT re-extract just to improve confidence)
 
-    Example: Finalize scenario
+    Example: Re-extraction scenario (ONLY when critical fields missing)
     - Schema requires: invoice_number, date, total_amount
-    - State: all required fields found with high confidence
-    - Decision: finalize"""
+    - State: invoice_number found, date found, total_amount NOT found anywhere
+    - Decision: re_extract chunk 3 with prompt "Extract total_amount" """
 
     task = dspy.InputField(desc="The extraction task - extract according to the provided schema")
     trajectory = dspy.InputField(desc="History of previous actions and their results")
@@ -116,7 +124,7 @@ class WorkerExtractionSignature(dspy.Signature):
 
     yaml_schema = dspy.InputField(desc="Full YAML schema defining what to extract")
     chunk_content = dspy.InputField(
-        desc="Document chunk content - text string for text documents or dspy.Image for vision processing"
+        desc="Document chunk content - text string"
     )
     chunk_idx = dspy.InputField(desc="Index of this chunk for reference")
     condensed_guidance = dspy.InputField(

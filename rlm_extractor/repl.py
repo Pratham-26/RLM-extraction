@@ -23,7 +23,7 @@ class REPLState:
     """
 
     # Thread safety lock for parallel updates
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.RLock, repr=False)
 
     # The document (never seen in full by Root LM)
     # Document as string (text mode) or list of image placeholders (image mode)
@@ -384,11 +384,11 @@ class REPLState:
 
         Not thread-safe - must be called with lock held.
         """
-        for field in fields_found:
-            self.fields_found_all.add(field)
+        for field_name in fields_found:
+            self.fields_found_all.add(field_name)
             # Also track if this is a required field
-            if field in self.required_fields:
-                self.required_fields_found.add(field)
+            if field_name in self.required_fields:
+                self.required_fields_found.add(field_name)
 
     def update_fields_found(self, fields_found: list[str]) -> None:
         """Update the aggregate set of fields found across all chunks.

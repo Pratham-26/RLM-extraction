@@ -4,10 +4,7 @@ Converts JSON Schema to YAML format optimized for LLM comprehension.
 Uses pyyaml for all conversions - no LLM calls.
 """
 
-import io
 import logging
-
-from PIL import Image
 
 logger = logging.getLogger(__name__)
 

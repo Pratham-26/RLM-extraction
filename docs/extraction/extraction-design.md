@@ -108,7 +108,6 @@ class RLMConfig:
     # Model configuration
     root_model: str              # Orchestrator (always text-based)
     worker_text_model: str       # For text documents
-    worker_vision_model: str     # For image documents
 
     # Chunking
     chunk_size: int = 2000       # Configurable chunk size (chars)
@@ -371,7 +370,6 @@ Same structure, with differences:
 
 - `INPUT = [base64_img_0, base64_img_1, ...]` (not a string)
 - `chunker.encode_images(images)` creates base64 list
-- Worker LM uses `worker_vision_model` (vision-capable)
 - `chunk_content` is base64 string, not text
 - Vision workers can directly "see" images without OCR
 
@@ -639,8 +637,7 @@ from rlm.extract import RLMExtractor, RLMConfig
 config = RLMConfig(
     root_model="openai/gpt-4o",
     worker_text_model="openai/gpt-4o-mini",
-    worker_vision_model="openai/gpt-4o",  # vision-capable
-    chunk_size=2000,
+        chunk_size=2000,
     summary_level="standard",
     max_parallel_workers=5,
 )
@@ -794,8 +791,7 @@ from rlm.extract import RLMExtractor, RLMConfig
 config = RLMConfig(
     root_model="openai/gpt-4o",
     worker_text_model="openai/gpt-4o-mini",
-    worker_vision_model="openai/gpt-4o",  # Vision capable
-)
+    )
 
 extractor = RLMExtractor(config)
 
@@ -931,7 +927,6 @@ result = extractor.extract(
 |-----------|------|---------|-------------|
 | `root_model` | `str` | *required* | Model for orchestration (text-based) |
 | `worker_text_model` | `str` | *required* | Model for text extraction |
-| `worker_vision_model` | `str` | *required* | Model for image extraction (vision-capable) |
 | `chunk_size` | `int` | `2000` | Characters per text chunk |
 | `summary_level` | `"minimal" \| "standard" \| "verbose"` | `"standard"` | Detail level of chunk gists |
 | `parallel_first_pass` | `bool` | `True` | Parallel processing for initial extraction |

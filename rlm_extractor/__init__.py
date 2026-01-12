@@ -7,6 +7,7 @@ environment that the LLM can programmatically interact with via Python code exec
 
 from rlm_extractor.config import RLMConfig
 from rlm_extractor.extract import ExtractionResult, RLMExtractor
+from rlm_extractor.logger import CallLogger
 from rlm_extractor.repl import REPLState
 
 __version__ = "0.1.0"
@@ -17,7 +18,6 @@ def extract(
     document: str | list,
     root_model: str,
     worker_text_model: str,
-    worker_vision_model: str,
     task: str | None = None,
     user_context: str | None = None,
     **config_kwargs,
@@ -29,10 +29,9 @@ def extract(
 
     Args:
         schema: JSON Schema defining what to extract
-        document: Text string, list of PIL Images, or list of file paths
+        document: Text string or list of file paths
         root_model: Model for orchestration (e.g., "openrouter/anthropic/claude-sonnet-4")
-        worker_text_model: Model for text document extraction
-        worker_vision_model: Model for image document extraction (must be vision-capable)
+        worker_text_model: Model for document extraction
         task: Optional custom task description
         user_context: Optional user-provided context and instructions
         **config_kwargs: Override any RLMConfig setting (chunk_size, max_parallel_workers, etc.)
@@ -47,7 +46,6 @@ def extract(
         ...     document="John Doe is here.",
         ...     root_model="openrouter/anthropic/claude-sonnet-4",
         ...     worker_text_model="openrouter/anthropic/claude-haiku-4",
-        ...     worker_vision_model="openrouter/anthropic/claude-sonnet-4",
         ... )
         >>> print(result.data)
         {'name': 'John Doe'}
@@ -55,7 +53,6 @@ def extract(
     config = RLMConfig(
         root_model=root_model,
         worker_text_model=worker_text_model,
-        worker_vision_model=worker_vision_model,
     )
     for key, value in config_kwargs.items():
         if hasattr(config, key):
@@ -74,6 +71,7 @@ __all__ = [
     "RLMConfig",
     "RLMExtractor",
     "ExtractionResult",
+    "CallLogger",
     "REPLState",
     "extract",
 ]

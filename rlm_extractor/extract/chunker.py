@@ -2,7 +2,7 @@
 
 Handles:
 - Text documents: Fixed-size slices at nearest space
-- Images: Store PIL Images for DSPy vision model processing
+- PDFs: Text extraction using pypdf
 
 Uses the Strategy pattern for extensibility - different chunking strategies
 can be added by implementing the ChunkingStrategy ABC.
@@ -11,25 +11,15 @@ can be added by implementing the ChunkingStrategy ABC.
 from __future__ import annotations
 
 import abc
-import io
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import dspy
-import fitz  # PyMuPDF
-from PIL import Image
+from pypdf import PdfReader
 
 if TYPE_CHECKING:
     # Import only for type checking to avoid circular imports
     pass
-
-if TYPE_CHECKING:
-    # Import only for type checking to avoid circular imports
-    pass
-
-# Supported image file extensions
-VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 
 # Supported text file extensions
 VALID_TEXT_EXTENSIONS = {".txt", ".md"}
@@ -38,7 +28,7 @@ VALID_TEXT_EXTENSIONS = {".txt", ".md"}
 VALID_PDF_EXTENSION = {".pdf"}
 
 # All supported file extensions
-ALL_SUPPORTED_EXTENSIONS = VALID_IMAGE_EXTENSIONS | VALID_TEXT_EXTENSIONS | VALID_PDF_EXTENSION
+ALL_SUPPORTED_EXTENSIONS = VALID_TEXT_EXTENSIONS | VALID_PDF_EXTENSION
 
 # Chunking constants
 # Maximum characters to search backward for a word boundary.
@@ -120,28 +110,6 @@ class TextChunkStrategy(ChunkingStrategy):
         return chunks
 
 
-class ImageChunkStrategy(ChunkingStrategy):
-    """Strategy for storing PIL Images directly for DSPy vision processing."""
-
-    def chunk(self, images: list[Image.Image], **kwargs) -> list[Chunk]:
-        """Store PIL Images directly for DSPy vision model processing.
-
-        DSPy's Image type handles encoding and formatting internally.
-
-        Args:
-            images: List of PIL Image objects
-
-        Returns:
-            List of Chunk objects with PIL Image content
-        """
-        chunks = []
-
-        for idx, image in enumerate(images):
-            chunks.append(Chunk(idx=idx, content=image))
-
-        return chunks
-
-
 @dataclass
 class Chunk:
     """A single chunk of a document."""
@@ -149,8 +117,8 @@ class Chunk:
     # Chunk index
     idx: int
 
-    # Chunk content (text string, PIL Image, or dspy.Image)
-    content: str | Image.Image | dspy.Image
+    # Chunk content (text string)
+    content: str
 
     # Start position in original document (text mode only)
     start: int | None = None
@@ -162,9 +130,8 @@ class Chunk:
 class Chunker:
     """Split documents into processable chunks for RLM extraction.
 
-    Uses the Strategy pattern - delegates to TextChunkStrategy and ImageChunkStrategy
-    for actual chunking operations. This makes it easy to add new chunking strategies
-    for other document types.
+    Uses the Strategy pattern - delegates to TextChunkStrategy
+    for actual chunking operations.
     """
 
     def __init__(self, chunk_size: int = 2000):
@@ -174,7 +141,6 @@ class Chunker:
             chunk_size: Target characters per text chunk (splits at nearest space)
         """
         self._text_strategy = TextChunkStrategy(chunk_size)
-        self._image_strategy = ImageChunkStrategy()
 
     @property
     def chunk_size(self) -> int:
@@ -199,60 +165,11 @@ class Chunker:
         """
         return self._text_strategy.chunk(text)
 
-    def encode_images(self, images: list[Image.Image]) -> list[Chunk]:
-        """Store PIL Images for DSPy vision model processing.
-
-        Delegates to ImageChunkStrategy which stores PIL Images directly.
-        DSPy's Image type handles encoding and formatting internally.
-
-        Args:
-            images: List of PIL Image objects
-
-        Returns:
-            List of Chunk objects with PIL Image content
-        """
-        return self._image_strategy.chunk(images)
-
-    def chunk_image_files(self, image_paths: list[str]) -> list[Chunk]:
-        """Load image files and store PIL Images for DSPy vision processing.
-
-        Args:
-            image_paths: List of image file paths
-
-        Returns:
-            List of Chunk objects with PIL Image content
-
-        Raises:
-            FileNotFoundError: If a file does not exist
-            ValueError: If a file has an invalid image extension
-        """
-        images = []
-        for path in image_paths:
-            # Normalize and validate path
-            abs_path = os.path.abspath(path)
-            if not os.path.exists(abs_path):
-                raise FileNotFoundError(f"Image file not found: {path}")
-
-            # Validate file extension
-            ext = os.path.splitext(abs_path)[1].lower()
-            if ext not in VALID_IMAGE_EXTENSIONS:
-                raise ValueError(
-                    f"Invalid image file type: {path}. "
-                    f"Supported extensions: {', '.join(sorted(VALID_IMAGE_EXTENSIONS))}"
-                )
-
-            try:
-                images.append(Image.open(abs_path))
-            except Exception as e:
-                raise ValueError(f"Failed to load image {path}: {e}")
-
-        return self.encode_images(images)
-
-    def count_chunks(self, document: str | list[Image.Image] | list[str]) -> int:
+    def count_chunks(self, document: str | list[str]) -> int:
         """Count how many chunks a document will produce.
 
         Args:
-            document: Text string, list of Images, or list of image paths
+            document: Text string or list of file paths
 
         Returns:
             Number of chunks
@@ -260,12 +177,21 @@ class Chunker:
         if isinstance(document, str):
             return len(self.chunk_text(document))
         elif isinstance(document, list):
-            if document and isinstance(document[0], Image.Image):
-                return len(document)
-            elif document and isinstance(document[0], str):
-                # Assume image paths
-                return len(document)
+            # List of file paths - count chunks for each
+            total = 0
+            for path in document:
+                if isinstance(path, str):
+                    try:
+                        content = self.load_text_file(path) if self._get_ext(path) in VALID_TEXT_EXTENSIONS else self.extract_pdf_text(path)
+                        total += len(self.chunk_text(content))
+                    except Exception:
+                        pass
+            return total
         return 0
+
+    def _get_ext(self, path: str) -> str:
+        """Get file extension from path."""
+        return os.path.splitext(path)[1].lower()
 
     def load_text_file(self, file_path: str) -> str:
         """Load text content from a .txt or .md file.
@@ -310,78 +236,8 @@ class Chunker:
             f"Tried: {', '.join(encodings)}. Errors: {'; '.join(errors)}"
         )
 
-    def convert_pdf_to_images(self, pdf_path: str, pdf_config) -> list[Image.Image]:
-        """Convert PDF to list of PIL Images using PyMuPDF.
-
-        Args:
-            pdf_path: Path to PDF file
-            pdf_config: PDFConfig object with conversion settings
-
-        Returns:
-            List of PIL Image objects (one per page)
-
-        Raises:
-            FileNotFoundError: If PDF file does not exist
-            RuntimeError: If PDF conversion fails
-        """
-
-        abs_path = os.path.abspath(pdf_path)
-        if not os.path.exists(abs_path):
-            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-
-        ext = os.path.splitext(abs_path)[1].lower()
-        if ext not in VALID_PDF_EXTENSION:
-            raise ValueError(f"Invalid PDF file type: {pdf_path}. Expected .pdf extension.")
-
-        try:
-            # Open PDF document
-            doc = fitz.open(abs_path)
-
-            # Determine page range to process
-            all_pages = range(len(doc))
-
-            if pdf_config.page_range is not None:
-                if isinstance(pdf_config.page_range, tuple):
-                    # (start, end) - 1-indexed, inclusive
-                    start, end = pdf_config.page_range
-                    page_indices = range(start - 1, min(end, len(all_pages)))
-                elif isinstance(pdf_config.page_range, list):
-                    # [1, 3, 5] - specific page numbers (1-indexed)
-                    page_indices = [i - 1 for i in pdf_config.page_range if 1 <= i <= len(doc)]
-                else:
-                    page_indices = all_pages
-            else:
-                page_indices = all_pages
-
-            # Apply first_page_only filter
-            if pdf_config.first_page_only and page_indices:
-                page_indices = [page_indices[0]]
-
-            # Convert pages to images
-            images = []
-            dpi_scale = pdf_config.dpi / 72.0
-
-            for page_idx in page_indices:
-                page = doc.load_page(page_idx)
-
-                # Render page to pixmap
-                mat = fitz.Matrix(dpi_scale, dpi_scale)
-                pix = page.get_pixmap(matrix=mat)
-
-                # Convert to PIL Image
-                img_bytes = pix.tobytes(output=pdf_config.fmt.upper())
-                img = Image.open(io.BytesIO(img_bytes))
-
-                images.append(img)
-
-            doc.close()
-            return images
-
-        except Exception as e:
-            raise RuntimeError(f"Failed to process PDF: {e}")
-
     def extract_pdf_text(self, pdf_path: str) -> str:
-        """Extract text from PDF using PyMuPDF.
+        """Extract text from PDF using pypdf.
 
         Args:
             pdf_path: Path to PDF file
@@ -390,44 +246,36 @@ class Chunker:
             Extracted text as a string
 
         Raises:
+            ValueError: If file has wrong extension
             FileNotFoundError: If PDF file does not exist
             RuntimeError: If PDF text extraction fails
         """
+        # Check extension first before checking file existence
+        ext = os.path.splitext(pdf_path)[1].lower()
+        if ext not in VALID_PDF_EXTENSION:
+            raise ValueError(f"Invalid PDF file type: {pdf_path}. Expected .pdf extension.")
 
         abs_path = os.path.abspath(pdf_path)
         if not os.path.exists(abs_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
-        ext = os.path.splitext(abs_path)[1].lower()
-        if ext not in VALID_PDF_EXTENSION:
-            raise ValueError(f"Invalid PDF file type: {pdf_path}. Expected .pdf extension.")
-
         try:
-            # Open PDF and extract text from all pages
-            doc = fitz.open(abs_path)
+            reader = PdfReader(abs_path)
             text = ""
-            for page in doc:
-                text += page.get_text()
-            doc.close()
+            for page in reader.pages:
+                text += page.extract_text() or ""
             return text
-
         except Exception as e:
             raise RuntimeError(f"Failed to extract text from PDF: {e}")
 
     def chunk_file(
         self,
         file_path: str,
-        pdf_config=None,
-        pdf_mode="auto",
     ) -> list[Chunk]:
         """Route file to appropriate chunking method based on extension.
 
         Args:
-            file_path: Path to the file (.txt, .md, .pdf, or image)
-            pdf_config: PDFConfig object for PDF conversion
-            pdf_mode: PDF processing mode ('text', 'image', or 'auto')
-                       Default is 'auto' which chooses text for text/markdown files,
-                       image for PDFs, or based on file extension.
+            file_path: Path to the file (.txt, .md, or .pdf)
 
         Returns:
             List of Chunk objects
@@ -448,34 +296,9 @@ class Chunker:
             return self.chunk_text(content)
 
         elif ext in VALID_PDF_EXTENSION:
-            # Determine PDF processing mode
-            if pdf_mode == "auto":
-                # Auto: use text for text/markdown-like content, otherwise image
-                # For simplicity, treat PDFs as image mode in auto
-                mode = "image"
-            else:
-                mode = pdf_mode
-
-            if mode == "text":
-                # Extract text and chunk as text
-                if pdf_config is None:
-                    from rlm_extractor.config import PDFConfig
-
-                    pdf_config = PDFConfig()
-                text_content = self.extract_pdf_text(file_path)
-                return self.chunk_text(text_content)
-            else:
-                # Convert PDF to images and chunk them
-                if pdf_config is None:
-                    from rlm_extractor.config import PDFConfig
-
-                    pdf_config = PDFConfig()
-                images = self.convert_pdf_to_images(file_path, pdf_config)
-                return self.encode_images(images)
-
-        elif ext in VALID_IMAGE_EXTENSIONS:
-            # Load image file
-            return self.chunk_image_files([file_path])
+            # Extract text and chunk as text
+            text_content = self.extract_pdf_text(file_path)
+            return self.chunk_text(text_content)
 
         else:
             raise ValueError(
@@ -487,8 +310,3 @@ class Chunker:
 def create_text_chunker(chunk_size: int = 2000) -> Chunker:
     """Factory function to create a text chunker."""
     return Chunker(chunk_size=chunk_size)
-
-
-def create_image_chunker() -> Chunker:
-    """Factory function to create an image chunker (chunk_size ignored for images)."""
-    return Chunker()

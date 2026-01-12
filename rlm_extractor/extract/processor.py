@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 import dspy
 
 from rlm_extractor.extract.chunker import Chunk
+from rlm_extractor.logger import CallLogger
+from rlm_extractor.signatures import WorkerExtractionSignature
 
 if TYPE_CHECKING:
     pass
@@ -67,6 +69,7 @@ class ChunkProcessor:
         max_parallel_workers: int = 5,
         max_attempts: int = 2,
         condensed_guidance: str = "",
+        logger: CallLogger | None = None,
     ):
         """Initialize processor.
 
@@ -75,48 +78,28 @@ class ChunkProcessor:
             max_parallel_workers: Maximum concurrent extractions
             max_attempts: Maximum retry attempts (default 2 = initial + 1 retry)
             condensed_guidance: Condensed user guidance for workers
+            logger: Optional CallLogger instance for logging LLM calls
         """
         self.worker_lm = worker_lm
         self.max_parallel_workers = max_parallel_workers
         self.max_attempts = max_attempts
         self.condensed_guidance = condensed_guidance
+        self.logger = logger
 
         # Create DSPy predictor for worker with LM context
         with dspy.context(lm=self.worker_lm):
-            from rlm_extractor.signatures import WorkerExtractionSignature
-
             self._worker_predictor = dspy.Predict(WorkerExtractionSignature)
 
-    def _prepare_chunk_content(self, chunk: Chunk):
+    def _prepare_chunk_content(self, chunk: Chunk) -> str:
         """Prepare chunk content for DSPy processing.
 
-        Wraps PIL images in dspy.Image for proper vision model handling.
-        Text chunks are passed through unchanged.
-
         Args:
-            chunk: Chunk with content (text string, PIL Image, or dspy.Image)
+            chunk: Chunk with content (text string)
 
         Returns:
-            Prepared content: text string or dspy.Image
+            Prepared content as string
         """
-        if TYPE_CHECKING:
-            from PIL import Image as PILImage
-        else:
-            try:
-                from PIL import Image as PILImage
-            except ImportError:
-                PILImage = None
-
-        if PILImage and isinstance(chunk.content, PILImage.Image):
-            # Wrap PIL image in dspy.Image for vision processing
-            # DSPy handles encoding and formatting internally
-            return dspy.Image(chunk.content)
-        elif isinstance(chunk.content, dspy.Image):
-            # Already a dspy.Image, pass through
-            return chunk.content
-        else:
-            # Text chunk, pass through as-is
-            return chunk.content
+        return str(chunk.content)
 
     def _calculate_backoff(self, attempt: int) -> float:
         """Calculate exponential backoff delay for a given attempt.
@@ -152,7 +135,31 @@ class ChunkProcessor:
         prepared_content = self._prepare_chunk_content(chunk)
 
         for attempt in range(1, self.max_attempts + 1):
+            call_id: str | None = None
             try:
+                # Log request if logger available
+                if self.logger:
+                    request_payload = {
+                        "yaml_schema": yaml_schema,
+                        "chunk_idx": chunk.idx,
+                        "chunk_content": str(prepared_content)[:500],
+                        "condensed_guidance": self.condensed_guidance,
+                        "targeted_prompt": targeted_prompt,
+                    }
+                    metadata = {
+                        "chunk_idx": chunk.idx,
+                        "attempt": attempt,
+                        "max_attempts": self.max_attempts,
+                    }
+                    call_id = self.logger.log_request(
+                        lm_type="worker",
+                        model=str(self.worker_lm),
+                        signature="WorkerExtractionSignature",
+                        call_type="worker_extraction",
+                        request=request_payload,
+                        metadata=metadata,
+                    )
+
                 # Call worker LM with predictor (already has LM configured)
                 result = self._worker_predictor(
                     yaml_schema=yaml_schema,
@@ -162,10 +169,30 @@ class ChunkProcessor:
                     targeted_prompt=targeted_prompt,
                 )
 
+                # Log response if logger available
+                if self.logger and call_id:
+                    response_payload = {
+                        "gist": getattr(result, "gist", ""),
+                        "entity_contexts": getattr(result, "entity_contexts", ""),
+                        "confidence": getattr(result, "confidence", "medium"),
+                        "missing_fields": getattr(result, "missing_fields", ""),
+                    }
+                    self.logger.log_response(call_id=call_id, response=response_payload)
+
                 # Parse result
                 return self._parse_worker_result(result, chunk.idx, attempt)
 
             except TimeoutError as e:
+                if self.logger is not None and call_id is not None:
+                    self.logger.log_error(
+                        call_id=call_id,
+                        error=f"Timeout after {attempt} attempts: {str(e)}",
+                        metadata={
+                            "chunk_idx": chunk.idx,
+                            "attempt": attempt,
+                            "error_type": "timeout",
+                        },
+                    )
                 if attempt >= self.max_attempts:
                     return ChunkProcessingResult(
                         success=False,
@@ -178,7 +205,16 @@ class ChunkProcessor:
 
             except Exception as e:
                 error_msg = str(e)
-
+                if self.logger is not None and call_id is not None:
+                    self.logger.log_error(
+                        call_id=call_id,
+                        error=error_msg,
+                        metadata={
+                            "chunk_idx": chunk.idx,
+                            "attempt": attempt,
+                            "error_type": "exception",
+                        },
+                    )
                 if attempt >= self.max_attempts:
                     return ChunkProcessingResult(
                         success=False,
@@ -355,11 +391,19 @@ class ChunkProcessor:
             }
 
             # Collect results as they complete
-            for future in as_completed(future_to_chunk):
+            for future in as_completed(future_to_chunk, timeout=300):  # 5 min total timeout
                 chunk = future_to_chunk[future]
                 try:
-                    result = future.result()
+                    result = future.result(timeout=120)  # 2 min per call timeout
                     results.append(result)
+                except TimeoutError:
+                    results.append(
+                        ChunkProcessingResult(
+                            success=False,
+                            chunk_idx=chunk.idx,
+                            error="Timeout: API call exceeded 120 seconds",
+                        )
+                    )
                 except Exception as e:
                     results.append(
                         ChunkProcessingResult(

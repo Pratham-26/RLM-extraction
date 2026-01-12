@@ -25,6 +25,9 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+issues.md
+CLAUDE.md
+run_luxical.py
 
 # PyInstaller
 *.manifest

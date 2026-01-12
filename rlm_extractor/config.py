@@ -1,4 +1,4 @@
-"""RLM Configuration - Dual LM setup with modality routing."""
+"""RLM Configuration - Dual LM setup for text-based extraction."""
 
 from dataclasses import dataclass, field
 from typing import Literal
@@ -10,32 +10,12 @@ load_dotenv()
 
 
 @dataclass
-class PDFConfig:
-    """Configuration for PDF to image conversion."""
-
-    # DPI for rendering (higher = better quality, larger images)
-    dpi: int = 200
-
-    # Page range: None = all pages, (start, end) for range, [n1, n2, ...] for specific pages
-    page_range: tuple[int, int] | list[int] | None = None
-
-    # Only process the first page
-    first_page_only: bool = False
-
-    # Image format for output (png, jpeg, etc.)
-    fmt: str = "png"
-
-    # Thread count for parallel conversion
-    thread_count: int = 1
-
-
-@dataclass
 class RLMConfig:
     """Configuration for RLM Schema Extraction.
 
-    Supports dual-model architecture with routing based on input modality:
-    - Root LM (orchestrator) - always text-based, does planning and coordination
-    - Worker LM (extraction) - switches between text and vision models
+    Supports dual-model architecture:
+    - Root LM (orchestrator) - text-based, does planning and coordination
+    - Worker LM (extraction) - text-based extraction worker
     """
 
     # Model configuration
@@ -44,9 +24,6 @@ class RLMConfig:
 
     # Model for text document extraction
     worker_text_model: str
-
-    # Model for image document extraction (must be vision-capable)
-    worker_vision_model: str
 
     # Chunking
     # Characters per text chunk (splits at nearest space)
@@ -68,7 +45,7 @@ class RLMConfig:
 
     # Execution limits
     # Maximum RLM orchestration turns
-    max_turns: int = 20
+    max_turns: int = 5
 
     # Seconds before code execution timeout
     code_execution_timeout: int = 30
@@ -81,20 +58,9 @@ class RLMConfig:
     # Maximum re-extraction attempts per chunk before giving up
     max_retries: int = 3
 
-    # PDF processing mode
-    # Controls how PDFs are processed: 'text', 'image', or 'auto'
-    # - 'text': Extract text directly from PDF and process as text chunks
-    # - 'image': Render PDF pages as images for vision models
-    # - 'auto': Choose automatically based on file type (text/markdown → text, others → image)
-    pdf_mode: Literal["text", "image", "auto"] = "auto"
-
-    # PDF to image conversion settings
-    pdf_config: PDFConfig = field(default_factory=PDFConfig)
-
     # Internal state (filled by configure_dspy)
     _root_lm: dspy.LM = field(init=False, repr=False)
     _worker_text_lm: dspy.LM = field(init=False, repr=False)
-    _worker_vision_lm: dspy.LM = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -114,21 +80,15 @@ class RLMConfig:
         # Configure root LM (orchestrator)
         self._root_lm = dspy.LM(
             self.root_model,
-            max_tokens=4096,
-            temperature=0.0,
+            max_tokens=8192,
+            temperature=0.3,
         )
 
-        # Configure worker LMs
+        # Configure worker LM
         self._worker_text_lm = dspy.LM(
             self.worker_text_model,
-            max_tokens=2048,
-            temperature=0.0,
-        )
-
-        self._worker_vision_lm = dspy.LM(
-            self.worker_vision_model,
-            max_tokens=2048,
-            temperature=0.0,
+            max_tokens=4096,
+            temperature=0.3,
         )
 
         # Set root LM as DSPy default
@@ -144,18 +104,12 @@ class RLMConfig:
             self.configure_dspy()
         return self._root_lm
 
-    def get_worker_lm(self, modality: Literal["text", "vision"]) -> dspy.LM:
-        """Get the appropriate worker LM for the input modality.
-
-        Args:
-            modality: Either "text" or "vision"
+    def get_worker_lm(self) -> dspy.LM:
+        """Get the worker LM instance.
 
         Returns:
-            Configured worker LM for the specified modality
+            Configured worker LM for extraction
         """
         if not hasattr(self, "_worker_text_lm"):
             self.configure_dspy()
-
-        if modality == "text":
-            return self._worker_text_lm
-            return self._worker_vision_lm
+        return self._worker_text_lm

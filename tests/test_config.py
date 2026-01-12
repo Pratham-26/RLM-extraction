@@ -8,23 +8,19 @@ class TestRLMConfig:
 
     def test_init_minimal(self):
         """Test minimal config initialization."""
-        # Mock out DSPy to avoid actual LM initialization
         config = RLMConfig(
             root_model="test/root",
             worker_text_model="test/worker-text",
-            worker_vision_model="test/worker-vision",
         )
 
         assert config.root_model == "test/root"
         assert config.worker_text_model == "test/worker-text"
-        assert config.worker_vision_model == "test/worker-vision"
 
     def test_init_with_defaults(self):
         """Test config with default values."""
         config = RLMConfig(
             root_model="test/root",
             worker_text_model="test/worker",
-            worker_vision_model="test/vision",
         )
 
         assert config.chunk_size == 2000
@@ -32,7 +28,7 @@ class TestRLMConfig:
         assert config.parallel_first_pass is True
         assert config.parallel_retry is False
         assert config.max_parallel_workers == 5
-        assert config.max_turns == 20
+        assert config.max_turns == 5
         assert config.code_execution_timeout == 30
         assert config.max_retries == 3
 
@@ -41,7 +37,6 @@ class TestRLMConfig:
         config = RLMConfig(
             root_model="test/root",
             worker_text_model="test/worker",
-            worker_vision_model="test/vision",
             chunk_size=3000,
             summary_level="verbose",
             parallel_first_pass=False,
@@ -61,12 +56,9 @@ class TestRLMConfig:
 
     def test_summary_level_validation(self):
         """Test that summary_level accepts valid values."""
-        # This test just verifies the type annotation works
-        # Runtime validation would need to be added
         config = RLMConfig(
             root_model="test/root",
             worker_text_model="test/worker",
-            worker_vision_model="test/vision",
             summary_level="minimal",
         )
         assert config.summary_level == "minimal"

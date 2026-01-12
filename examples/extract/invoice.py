@@ -135,7 +135,6 @@ def main():
     config = RLMConfig(
         root_model="openai/gpt-4o",
         worker_text_model="openai/gpt-4o-mini",
-        worker_vision_model="openai/gpt-4o",
         chunk_size=2000,
         max_parallel_workers=5,
     )

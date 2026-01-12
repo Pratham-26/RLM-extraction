@@ -11,48 +11,16 @@ RLM enables LLMs to process **arbitrarily long documents** beyond their native c
 - **Unlimited Input Length** - Process documents of any size by chunking
 - **Dual-Model Architecture** - Root LM (orchestrator) + Worker LM (extraction)
 - **Schema-Based Extraction** - Extract structured data using JSON Schema
-- **Text & Image Support** - Process text documents or document images
+- **Text & PDF Support** - Process text documents and extract text from PDFs
 - **Parallel Processing** - Extract from multiple chunks simultaneously
 - **Transparent Failures** - Return all failures with results for manual review
+- **LLM Call Logging** - Automatic logging of all Root/Worker LM calls for fine-tuning
 
-# PDF Support
+## PDF Support
 
-RLM uses [PyMuPDF](https://pymupdf.readthedocs.io/) for PDF processing. PyMuPDF is a high-performance Python library that works on all platforms including Windows, macOS, and Linux. No external dependencies required.
+RLM uses [pypdf](https://pypdf.readthedocs.io/) for text extraction from PDFs. pypdf is a pure-Python library that works on all platforms including Windows, macOS, and Linux. No external dependencies required.
 
-## PDF Processing Mode
-
-The `pdf_mode` parameter in `extract()` and `RLMExtractor` controls how PDFs are processed:
-
-- `'text'` (recommended for text-based PDFs): Extracts text directly from PDF and processes as text chunks
-- `'image'` (recommended for scanned PDFs): Renders PDF pages as images for vision models
-- `'auto'` (default): Chooses 'text' for text/markdown files, 'image' for PDFs
-
-**Default behavior**:
-- Text/markdown files → text mode
-- PDF files → image mode
-- Image files → vision mode
-- Image paths → vision mode
-- Lists → vision mode
-
-**User override**:
-Pass `pdf_mode="text"` to force text extraction from PDFs.
-
-Example:
-```python
-from rlm_extractor import RLMExtractor, RLMConfig
-
-config = RLMConfig(
-    root_model="openrouter/anthropic/claude-sonnet-4",
-    worker_text_model="openrouter/anthropic/claude-haiku-4",
-    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
-)
-extractor = RLMExtractor(config)
-result = extractor.extract(
-    json_schema=...,
-    document="invoice.pdf",  # PDF file
-    pdf_mode="image"  # Force image mode instead
-)
-```
+Simply pass a PDF file path and RLM will automatically extract text and process it.
 
 ```bash
 # Install uv (if not already installed)
@@ -71,10 +39,6 @@ uv pip install -e ".[dev]"
 ```bash
 uv venv && uv pip install -e .
 ```
-
-### PDF Support
-
-RLM uses [PyMuPDF](https://pymupdf.readthedocs.io/) for PDF processing. PyMuPDF is a high-performance Python library that works on all platforms including Windows, macOS, and Linux. No external dependencies required.
 
 ## API Key Setup
 
@@ -125,7 +89,7 @@ print(result.data)  # {'name': 'John Doe', 'email': 'john@example.com'}
 
 **Default models used by `extract()`:**
 - Root LM: `openrouter/minimax/minimax-m2.1`
-- Worker text/vision LM: `openrouter/google/gemini-2.5-flash-lite`
+- Worker LM: `openrouter/google/gemini-2.5-flash-lite`
 
 You can override these defaults by passing your own model parameters:
 
@@ -135,7 +99,6 @@ result = extract(
     document=document,
     root_model="openrouter/anthropic/claude-sonnet-4",
     worker_text_model="openrouter/anthropic/claude-haiku-4",
-    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
 )
 ```
 
@@ -151,7 +114,6 @@ result = extract(
     document=large_document,
     root_model="openrouter/anthropic/claude-sonnet-4",
     worker_text_model="openrouter/anthropic/claude-haiku-4",
-    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
     chunk_size=3000,  # Larger chunks
     max_parallel_workers=10,  # More parallelism
     max_turns=30  # More extraction rounds
@@ -183,7 +145,6 @@ from rlm_extractor import RLMExtractor, RLMConfig
 config = RLMConfig(
     root_model="openrouter/anthropic/claude-sonnet-4",
     worker_text_model="openrouter/anthropic/claude-haiku-4",
-    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
 )
 
 # Initialize extractor
@@ -208,6 +169,176 @@ result = extractor.extract(
 # Access results
 print(result.data)  # Extracted JSON
 print(result.failures)  # Any failures
+print(result.log_file_path)  # Path to LLM call log file (JSON Lines format)
+```
+
+## LLM Call Logging
+
+RLM automatically logs all LLM requests and responses to a JSON Lines (`.jsonl`) file. This is useful for:
+- Debugging extraction issues
+- Building training datasets for fine-tuning
+- Analyzing model behavior
+- Tracking token usage and performance
+
+### Log File Location
+
+Log files are created in the current working directory with the format:
+```
+rlm_extraction_YYYYMMDD_HHMMSS.jsonl
+```
+
+The log file path is available in `result.log_file_path` after extraction completes.
+
+### Log Format
+
+Each line is a complete JSON object representing one LLM interaction:
+
+**Request entry (Root LM):**
+```json
+{
+  "timestamp": "2024-01-11T12:34:56.789Z",
+  "call_id": "uuid-here",
+  "lm_type": "root",
+  "model": "openrouter/anthropic/claude-sonnet-4",
+  "signature": "RootExtractionSignature",
+  "call_type": "root_decision",
+  "stage": "request",
+  "request": {
+    "task": "Extract invoice fields",
+    "field_completion": "invoice_number: found, date: missing"
+  },
+  "metadata": {
+    "turn": 1
+  }
+}
+```
+
+**Request entry (Worker LM):**
+```json
+{
+  "timestamp": "2024-01-11T12:35:12.456Z",
+  "call_id": "uuid-here",
+  "lm_type": "worker",
+  "model": "openrouter/anthropic/claude-haiku-4",
+  "signature": "WorkerExtractionSignature",
+  "call_type": "worker_extraction",
+  "stage": "request",
+  "request": {
+    "yaml_schema": "invoice_number: string\\ndate: string",
+    "chunk_idx": 0,
+    "chunk_content": "This is chunk 0 content...",
+    "condensed_guidance": "Extract all fields",
+    "targeted_prompt": ""
+  },
+  "metadata": {
+    "chunk_idx": 0,
+    "attempt": 1,
+    "max_attempts": 2
+  }
+}
+```
+
+**Response entry:**
+```json
+{
+  "timestamp": "2024-01-11T12:35:15.789Z",
+  "call_id": "uuid-here",
+  "stage": "response",
+  "response": {
+    "thought": "Date field is missing, need to re-extract",
+    "action": "re_extract",
+    "target_chunk": "2"
+  },
+  "metadata": {}
+}
+```
+
+**Error entry:**
+```json
+{
+  "timestamp": "2024-01-11T12:35:20.123Z",
+  "call_id": "uuid-here",
+  "stage": "error",
+  "error": "Timeout after 2 attempts",
+  "metadata": {
+    "chunk_idx": 0,
+    "attempt": 2,
+    "error_type": "timeout"
+  }
+}
+```
+
+### Log Entry Fields
+
+| Field | Description |
+|-------|-------------|
+| `timestamp` | ISO 8601 timestamp when entry was created |
+| `call_id` | UUID to pair request/response entries |
+| `lm_type` | `"root"` or `"worker"` - indicates which LM made the call |
+| `model` | Full model identifier (e.g., `openrouter/anthropic/claude-sonnet-4`) |
+| `signature` | DSPy signature class name |
+| `call_type` | Specific operation type (root_decision, worker_extraction, context_condensation) |
+| `stage` | `"request"`, `"response"`, or `"error"` |
+| `request` | Full request payload (for `stage: "request"`) |
+| `response` | Full response payload (for `stage: "response"`) |
+| `error` | Error message (for `stage: "error"`) |
+| `metadata` | Context information (chunk_idx, turn, attempt, error_type, etc.) |
+
+### Using Logs for Fine-Tuning
+
+The log files are in JSON Lines format, making them easy to parse and convert to training datasets:
+
+```python
+import json
+
+# Read log file
+with open(result.log_file_path, "r", encoding="utf-8") as f:
+    for line in f:
+        entry = json.loads(line)
+
+        # Filter for worker LM extractions only
+        if (
+            entry["stage"] == "request"
+            and entry["lm_type"] == "worker"
+            and entry["call_type"] == "worker_extraction"
+        ):
+            call_id = entry["call_id"]
+            request = entry["request"]
+
+            # Find corresponding response
+            # (you'd need to read all lines into memory or stream twice)
+            # ...
+
+# Example: Extract all successful worker extractions
+successful_extractions = []
+lines = []
+
+with open(result.log_file_path, "r", encoding="utf-8") as f:
+    lines = [json.loads(line) for line in f]
+
+# Pair requests and responses
+for entry in lines:
+    if entry["stage"] == "request" and entry["lm_type"] == "worker":
+        call_id = entry["call_id"]
+        response = next(
+            (
+                e
+                for e in lines
+                if e["call_id"] == call_id and e["stage"] == "response"
+            ),
+            None,
+        )
+        if response:
+            successful_extractions.append(
+                {
+                    "request": entry["request"],
+                    "response": response["response"],
+                    "model": entry["model"],
+                }
+            )
+
+print(f"Found {len(successful_extractions)} successful extractions")
+```
 ```
 
 ## Examples
@@ -217,7 +348,6 @@ See `examples/` for complete examples:
 - `examples/demo.py` - Simple demo
 - `examples/extract/invoice.py` - Invoice extraction
 - `examples/extract/contract.py` - Contract extraction
-- `examples/extract/images.py` - Image document extraction
 
 ```bash
 # Run examples with uv
@@ -237,21 +367,18 @@ from rlm_extractor import RLMConfig
 config = RLMConfig(
     root_model="openrouter/anthropic/claude-sonnet-4",
     worker_text_model="openrouter/anthropic/claude-haiku-4",
-    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
 )
 
 # OpenAI models
 config = RLMConfig(
     root_model="openai/gpt-4o",
     worker_text_model="openai/gpt-4o-mini",
-    worker_vision_model="openai/gpt-4o",
 )
 
 # Anthropic models
 config = RLMConfig(
     root_model="anthropic/claude-sonnet-4",
     worker_text_model="anthropic/claude-haiku-4",
-    worker_vision_model="anthropic/claude-sonnet-4",
 )
 ```
 
@@ -261,7 +388,6 @@ config = RLMConfig(
 config = RLMConfig(
     root_model="openrouter/anthropic/claude-sonnet-4",
     worker_text_model="openrouter/anthropic/claude-haiku-4",
-    worker_vision_model="openrouter/anthropic/claude-sonnet-4",
     chunk_size=2000,
     summary_level="standard",  # minimal/standard/verbose
     max_parallel_workers=5,
@@ -286,7 +412,7 @@ Document     ──►  Chunk (2K chars)        ──►  INPUT variable
                            │
           Parallel First Pass │ Sequential Re-check
                     │        │
-         Worker LM (text/vision)
+         Worker LM (text)
          - Full YAML schema
          - Chunk + gist
          - Extract fields
@@ -327,6 +453,7 @@ uv run pytest --cov=rlm --cov-report=html
 | Chunker | ✅ Complete |
 | Worker Extraction | ✅ Complete |
 | RLM Extractor | ✅ Complete |
+| LLM Call Logging | ✅ Complete |
 | Examples | ✅ Complete |
 | Tests | ✅ Complete |
 

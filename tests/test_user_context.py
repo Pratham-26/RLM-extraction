@@ -50,8 +50,8 @@ class TestChunkProcessorGuidance:
         processor = ChunkProcessor(worker_lm=mock_lm)
         assert processor.condensed_guidance == ""
 
-    @patch("rlm_extractor.extract.processor.ChunkProcessor._get_predictor")
-    def test_process_chunk_passes_guidance(self, mock_get_predictor):
+    @patch("rlm_extractor.extract.processor.dspy.Predict")
+    def test_process_chunk_passes_guidance(self, mock_predict_class):
         from rlm_extractor.extract.processor import ChunkProcessor
         from rlm_extractor.extract.chunker import Chunk
 
@@ -63,7 +63,7 @@ class TestChunkProcessorGuidance:
         mock_result.confidence = "high"
         mock_result.missing_fields = "[]"
         mock_predictor.return_value = mock_result
-        mock_get_predictor.return_value = mock_predictor
+        mock_predict_class.return_value = mock_predictor
 
         mock_lm = MagicMock()
         processor = ChunkProcessor(
@@ -137,7 +137,6 @@ class TestExtractorUserContext:
         self.config = RLMConfig(
             root_model="openai/gpt-4o",
             worker_text_model="openai/gpt-4o-mini",
-            worker_vision_model="openai/gpt-4o",
         )
 
     def test_extract_method_has_user_context_param(self):
@@ -193,8 +192,8 @@ class TestIntegrationUserContextFlow:
 
         assert processor.condensed_guidance == guidance
 
-    @patch("rlm_extractor.extract.processor.ChunkProcessor._get_predictor")
-    def test_guidance_reaches_worker_lm(self, mock_get_predictor):
+    @patch("rlm_extractor.extract.processor.dspy.Predict")
+    def test_guidance_reaches_worker_lm(self, mock_predict_class):
         """Test that guidance reaches the worker LM during processing."""
         from rlm_extractor.extract.processor import ChunkProcessor
         from rlm_extractor.extract.chunker import Chunk
@@ -206,7 +205,7 @@ class TestIntegrationUserContextFlow:
         mock_result.confidence = "high"
         mock_result.missing_fields = "[]"
         mock_predictor.return_value = mock_result
-        mock_get_predictor.return_value = mock_predictor
+        mock_predict_class.return_value = mock_predictor
 
         mock_lm = MagicMock()
         guidance = "BP means blood pressure"
@@ -228,7 +227,6 @@ class TestUserContextValidation:
         self.config = RLMConfig(
             root_model="openai/gpt-4o",
             worker_text_model="openai/gpt-4o-mini",
-            worker_vision_model="openai/gpt-4o",
         )
 
     def test_validate_user_context_accepts_valid_input(self):
@@ -277,7 +275,6 @@ class TestUserContextValidation:
         config = RLMConfig(
             root_model="openai/gpt-4o",
             worker_text_model="openai/gpt-4o-mini",
-            worker_vision_model="openai/gpt-4o",
             max_user_context_chars=100,
         )
         mock_lm = MagicMock()
