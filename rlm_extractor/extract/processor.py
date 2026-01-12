@@ -19,45 +19,20 @@ if TYPE_CHECKING:
     pass
 
 
-# Retry configuration constants
-class RetryConfig:
-    # Base delay for exponential backoff (seconds)
-    BASE_DELAY: float = 1.0
-
-    # Maximum delay between retries (seconds)
-    MAX_DELAY: float = 10.0
-
-    # Backoff multiplier for exponential increase
-    BACKOFF_MULTIPLIER: float = 2.0
+# Retry configuration
+RETRY_DELAY = 1.0  # Fixed delay between retries (seconds)
 
 
 @dataclass
 class ChunkProcessingResult:
     """Result from processing a single chunk."""
 
-    # Whether extraction succeeded
     success: bool
-
-    # Index of the processed chunk
     chunk_idx: int
-
-    # Summary of chunk content
     gist: str | None = None
-
-    # Extracted data from this chunk
     extracted: dict | None = None
-
-    # Confidence level: high/medium/low
-    confidence: str = "medium"
-
-    # Schema fields not found in this chunk
     missing_fields: list[str] | None = None
-
-    # Error message if extraction failed
     error: str | None = None
-
-    # Number of attempts made
-    attempts: int = 1
 
 
 class ChunkProcessor:
@@ -71,15 +46,6 @@ class ChunkProcessor:
         condensed_guidance: str = "",
         logger: CallLogger | None = None,
     ):
-        """Initialize processor.
-
-        Args:
-            worker_lm: Worker LM for extraction
-            max_parallel_workers: Maximum concurrent extractions
-            max_attempts: Maximum retry attempts (default 2 = initial + 1 retry)
-            condensed_guidance: Condensed user guidance for workers
-            logger: Optional CallLogger instance for logging LLM calls
-        """
         self.worker_lm = worker_lm
         self.max_parallel_workers = max_parallel_workers
         self.max_attempts = max_attempts
@@ -90,29 +56,54 @@ class ChunkProcessor:
         with dspy.context(lm=self.worker_lm):
             self._worker_predictor = dspy.Predict(WorkerExtractionSignature)
 
-    def _prepare_chunk_content(self, chunk: Chunk) -> str:
-        """Prepare chunk content for DSPy processing.
+    def _log_request(
+        self, chunk: Chunk, yaml_schema: str, targeted_prompt: str, attempt: int
+    ) -> str | None:
+        """Log LLM request if logger available."""
+        if not self.logger:
+            return None
 
-        Args:
-            chunk: Chunk with content (text string)
+        request_payload = {
+            "yaml_schema": yaml_schema,
+            "chunk_idx": chunk.idx,
+            "chunk_content": str(chunk.content)[:500],
+            "condensed_guidance": self.condensed_guidance,
+            "targeted_prompt": targeted_prompt,
+        }
+        metadata = {
+            "chunk_idx": chunk.idx,
+            "attempt": attempt,
+            "max_attempts": self.max_attempts,
+        }
+        return self.logger.log_request(
+            lm_type="worker",
+            model=str(self.worker_lm),
+            signature="WorkerExtractionSignature",
+            call_type="worker_extraction",
+            request=request_payload,
+            metadata=metadata,
+        )
 
-        Returns:
-            Prepared content as string
-        """
-        return str(chunk.content)
+    def _log_response(self, call_id: str | None, result: dspy.Prediction) -> None:
+        """Log LLM response if logger available."""
+        if self.logger and call_id:
+            response_payload = {
+                "gist": getattr(result, "gist", ""),
+                "entity_contexts": getattr(result, "entity_contexts", ""),
+                "missing_fields": getattr(result, "missing_fields", ""),
+            }
+            self.logger.log_response(call_id=call_id, response=response_payload)
 
-    def _calculate_backoff(self, attempt: int) -> float:
-        """Calculate exponential backoff delay for a given attempt.
-
-        Args:
-            attempt: The attempt number (1-indexed)
-
-        Returns:
-            Delay in seconds, capped at MAX_DELAY
-        """
-        # Calculate exponential backoff: base * (multiplier ^ (attempt - 1))
-        delay = RetryConfig.BASE_DELAY * (RetryConfig.BACKOFF_MULTIPLIER ** (attempt - 1))
-        return min(delay, RetryConfig.MAX_DELAY)
+    def _log_error(
+        self, call_id: str | None, chunk: Chunk, error: str, attempt: int
+    ) -> None:
+        """Log LLM error if logger available."""
+        if self.logger and call_id:
+            self.logger.log_error(
+                call_id=call_id,
+                error=error,
+                metadata={"chunk_idx": chunk.idx, "attempt": attempt},
+            )
 
     def process_chunk(
         self,
@@ -120,166 +111,70 @@ class ChunkProcessor:
         yaml_schema: str,
         targeted_prompt: str = "",
     ) -> ChunkProcessingResult:
-        """Process a single chunk with retry logic.
-
-        Args:
-            chunk: Chunk to process
-            yaml_schema: YAML schema for extraction
-            targeted_prompt: Optional specific instruction for re-extraction
-
-        Returns:
-            ChunkProcessingResult with success status and data/error
-        """
-
-        # Prepare chunk content for DSPy
-        prepared_content = self._prepare_chunk_content(chunk)
+        """Process a single chunk with retry logic."""
+        current_prompt = targeted_prompt
 
         for attempt in range(1, self.max_attempts + 1):
-            call_id: str | None = None
-            try:
-                # Log request if logger available
-                if self.logger:
-                    request_payload = {
-                        "yaml_schema": yaml_schema,
-                        "chunk_idx": chunk.idx,
-                        "chunk_content": str(prepared_content)[:500],
-                        "condensed_guidance": self.condensed_guidance,
-                        "targeted_prompt": targeted_prompt,
-                    }
-                    metadata = {
-                        "chunk_idx": chunk.idx,
-                        "attempt": attempt,
-                        "max_attempts": self.max_attempts,
-                    }
-                    call_id = self.logger.log_request(
-                        lm_type="worker",
-                        model=str(self.worker_lm),
-                        signature="WorkerExtractionSignature",
-                        call_type="worker_extraction",
-                        request=request_payload,
-                        metadata=metadata,
-                    )
+            call_id = self._log_request(chunk, yaml_schema, current_prompt, attempt)
 
-                # Call worker LM with predictor (already has LM configured)
+            try:
                 result = self._worker_predictor(
                     yaml_schema=yaml_schema,
-                    chunk_content=prepared_content,
+                    chunk_content=str(chunk.content),
                     chunk_idx=str(chunk.idx),
                     condensed_guidance=self.condensed_guidance,
-                    targeted_prompt=targeted_prompt,
+                    targeted_prompt=current_prompt,
                 )
 
-                # Log response if logger available
-                if self.logger and call_id:
-                    response_payload = {
-                        "gist": getattr(result, "gist", ""),
-                        "entity_contexts": getattr(result, "entity_contexts", ""),
-                        "confidence": getattr(result, "confidence", "medium"),
-                        "missing_fields": getattr(result, "missing_fields", ""),
-                    }
-                    self.logger.log_response(call_id=call_id, response=response_payload)
+                self._log_response(call_id, result)
+                return self._parse_worker_result(result, chunk.idx)
 
-                # Parse result
-                return self._parse_worker_result(result, chunk.idx, attempt)
-
-            except TimeoutError as e:
-                if self.logger is not None and call_id is not None:
-                    self.logger.log_error(
-                        call_id=call_id,
-                        error=f"Timeout after {attempt} attempts: {str(e)}",
-                        metadata={
-                            "chunk_idx": chunk.idx,
-                            "attempt": attempt,
-                            "error_type": "timeout",
-                        },
-                    )
-                if attempt >= self.max_attempts:
-                    return ChunkProcessingResult(
-                        success=False,
-                        chunk_idx=chunk.idx,
-                        error=f"Timeout after {attempt} attempts: {str(e)}",
-                        attempts=attempt,
-                    )
-                # Apply exponential backoff before retry
-                time.sleep(self._calculate_backoff(attempt))
-
-            except Exception as e:
+            except (TimeoutError, Exception) as e:
                 error_msg = str(e)
-                if self.logger is not None and call_id is not None:
-                    self.logger.log_error(
-                        call_id=call_id,
-                        error=error_msg,
-                        metadata={
-                            "chunk_idx": chunk.idx,
-                            "attempt": attempt,
-                            "error_type": "exception",
-                        },
-                    )
+                self._log_error(call_id, chunk, error_msg, attempt)
+
                 if attempt >= self.max_attempts:
                     return ChunkProcessingResult(
                         success=False,
                         chunk_idx=chunk.idx,
                         error=f"Failed after {attempt} attempts: {error_msg}",
-                        attempts=attempt,
                     )
 
-                # Apply exponential backoff before retry
-                time.sleep(self._calculate_backoff(attempt))
+                # Simple fixed delay before retry
+                time.sleep(RETRY_DELAY)
 
-                # Modify prompt for retry
-                if "parse" in error_msg.lower():
-                    targeted_prompt = (
-                        "Please fix your output format. Previous attempt had parsing errors. "
-                        "Return entity contexts in 'field_name: description' format, one per line."
-                    )
-                else:
-                    targeted_prompt = (
-                        f"Please try again. Previous attempt failed: {error_msg[:100]}"
-                    )
+                # Update prompt for retry
+                current_prompt = self._get_retry_prompt(error_msg)
 
         # Should not reach here
         return ChunkProcessingResult(
-            success=False,
-            chunk_idx=chunk.idx,
-            error="Unknown error",
-            attempts=self.max_attempts,
+            success=False, chunk_idx=chunk.idx, error="Unknown error"
         )
 
+    def _get_retry_prompt(self, error_msg: str) -> str:
+        """Generate prompt for retry attempt."""
+        if "parse" in error_msg.lower():
+            return (
+                "Please fix your output format. Previous attempt had parsing errors. "
+                "Return entity contexts in 'field_name: description' format, one per line."
+            )
+        return f"Please try again. Previous attempt failed: {error_msg[:100]}"
+
     def _parse_worker_result(
-        self,
-        result: dspy.Prediction,
-        chunk_idx: int,
-        attempts: int,
+        self, result: dspy.Prediction, chunk_idx: int
     ) -> ChunkProcessingResult:
         """Parse worker LM result into ChunkProcessingResult."""
         try:
-            # Extract fields from DSPy prediction
             gist = getattr(result, "gist", "")
             entity_contexts_str = getattr(result, "entity_contexts", "")
-            confidence_val = getattr(result, "confidence", "medium")
-            confidence = (
-                confidence_val.lower() if isinstance(confidence_val, str) else confidence_val
-            )
             missing_fields_str = getattr(result, "missing_fields", "")
-
-            # Parse entity contexts
-            entity_contexts = self._parse_entity_contexts(entity_contexts_str)
-
-            # Parse missing fields
-            missing_fields = self._parse_missing_fields(missing_fields_str)
-
-            # Normalize confidence
-            if confidence not in ("high", "medium", "low"):
-                confidence = "medium"
 
             return ChunkProcessingResult(
                 success=True,
                 chunk_idx=chunk_idx,
                 gist=gist or f"Chunk {chunk_idx} processed",
-                extracted=entity_contexts or {},
-                confidence=confidence,
-                missing_fields=missing_fields or [],
-                attempts=attempts,
+                extracted=self._parse_entity_contexts(entity_contexts_str),
+                missing_fields=self._parse_missing_fields(missing_fields_str),
             )
 
         except Exception as e:
@@ -287,30 +182,16 @@ class ChunkProcessor:
                 success=False,
                 chunk_idx=chunk_idx,
                 error=f"Failed to parse worker result: {str(e)}",
-                attempts=attempts,
             )
 
     def _parse_entity_contexts(self, contexts_str: str) -> dict:
-        """Parse 'field_name: description' format into dict.
-
-        Simple parsing - no schema validation needed. Worker just describes
-        what it sees; Root LM handles schema mapping and validation.
-
-        Args:
-            contexts_str: Raw entity contexts from worker LM
-
-        Returns:
-            Dict mapping field_name -> context_description
-        """
+        """Parse 'field_name: description' format into dict."""
         if not contexts_str or contexts_str.strip() in ("", "none", "null"):
             return {}
 
         contexts = {}
-        lines = contexts_str.strip().split("\n")
-
-        for line in lines:
+        for line in contexts_str.strip().split("\n"):
             line = line.strip()
-            # Skip empty lines and common LLM artifacts
             if not line or line.lower().startswith(
                 ("entity contexts:", "entity_contexts:", "contexts:")
             ):
@@ -328,13 +209,7 @@ class ChunkProcessor:
         return contexts
 
     def _parse_missing_fields(self, fields_str: str) -> list[str]:
-        """Parse missing fields string into list.
-
-        Handles list format from LLM output (e.g., "['field1', 'field2']")
-        and comma-separated as fallback. Input is sanitized to prevent
-        injection attacks.
-        """
-        # Maximum number of fields to prevent abuse
+        """Parse missing fields string into list."""
         max_missing_fields = 100
 
         if not fields_str or fields_str.strip() in ("[]", "", "none", "null"):
@@ -351,19 +226,19 @@ class ChunkProcessor:
 
             result = ast.literal_eval(cleaned)
             if isinstance(result, list):
-                # Limit size and sanitize each field
-                fields = [str(f).strip() for f in result if f]
-                return fields[:max_missing_fields]
+                return [str(f).strip() for f in result if f][:max_missing_fields]
             return []
         except (ValueError, SyntaxError):
-            # Try comma-separated as fallback
             if "," in cleaned:
-                fields = [f.strip() for f in cleaned.split(",")]
-                # Filter out empty strings and limit
-                return [f for f in fields if f][:max_missing_fields]
-            # Single field
+                return [f.strip() for f in cleaned.split(",") if f][:max_missing_fields]
             single = cleaned.strip()
             return [single] if single else []
+
+    def _error_result(self, chunk_idx: int, error: str) -> ChunkProcessingResult:
+        """Create an error result."""
+        return ChunkProcessingResult(
+            success=False, chunk_idx=chunk_idx, error=error
+        )
 
     def process_chunks_parallel(
         self,
@@ -371,49 +246,25 @@ class ChunkProcessor:
         yaml_schema: str,
         targeted_prompt: str = "",
     ) -> list[ChunkProcessingResult]:
-        """Process multiple chunks in parallel.
-
-        Args:
-            chunks: List of chunks to process
-            yaml_schema: YAML schema for extraction
-            targeted_prompt: Optional specific instruction (same for all chunks)
-
-        Returns:
-            List of ChunkProcessingResult in same order as input chunks
-        """
+        """Process multiple chunks in parallel."""
         results: list[ChunkProcessingResult] = []
 
         with ThreadPoolExecutor(max_workers=self.max_parallel_workers) as executor:
-            # Submit all jobs
             future_to_chunk = {
                 executor.submit(self.process_chunk, chunk, yaml_schema, targeted_prompt): chunk
                 for chunk in chunks
             }
 
-            # Collect results as they complete
-            for future in as_completed(future_to_chunk, timeout=300):  # 5 min total timeout
+            for future in as_completed(future_to_chunk, timeout=300):
                 chunk = future_to_chunk[future]
                 try:
-                    result = future.result(timeout=120)  # 2 min per call timeout
+                    result = future.result(timeout=120)
                     results.append(result)
                 except TimeoutError:
-                    results.append(
-                        ChunkProcessingResult(
-                            success=False,
-                            chunk_idx=chunk.idx,
-                            error="Timeout: API call exceeded 120 seconds",
-                        )
-                    )
+                    results.append(self._error_result(chunk.idx, "Timeout"))
                 except Exception as e:
-                    results.append(
-                        ChunkProcessingResult(
-                            success=False,
-                            chunk_idx=chunk.idx,
-                            error=f"Unexpected error: {str(e)}",
-                        )
-                    )
+                    results.append(self._error_result(chunk.idx, str(e)))
 
-        # Sort results by chunk index
         results.sort(key=lambda r: r.chunk_idx)
         return results
 
@@ -423,16 +274,7 @@ class ChunkProcessor:
         yaml_schema: str,
         targeted_prompts: dict[int, str] | None = None,
     ) -> list[ChunkProcessingResult]:
-        """Process chunks sequentially with optional targeted prompts.
-
-        Args:
-            chunks: List of chunks to process
-            yaml_schema: YAML schema for extraction
-            targeted_prompts: Optional dict mapping chunk_idx to specific prompt
-
-        Returns:
-            List of ChunkProcessingResult
-        """
+        """Process chunks sequentially with optional targeted prompts."""
         results = []
 
         for chunk in chunks:

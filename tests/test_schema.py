@@ -1,22 +1,15 @@
-"""Tests for SchemaConverter."""
+"""Tests for schema conversion."""
 
 import pytest
 
-from rlm_extractor.extract.schema import SchemaConverter
+from rlm_extractor.extract.schema import json_to_yaml
 
 
 class TestSchemaConverter:
     """Test schema conversion functionality."""
 
-    def test_init(self):
-        """Test converter initialization."""
-        converter = SchemaConverter()
-        assert converter is not None
-
     def test_json_to_yaml_simple(self):
         """Test converting simple JSON Schema to YAML."""
-        converter = SchemaConverter()
-
         schema = {
             "type": "object",
             "properties": {
@@ -25,7 +18,7 @@ class TestSchemaConverter:
             },
         }
 
-        yaml_str = converter.json_to_yaml_chunks(schema)
+        yaml_str = json_to_yaml(schema)
 
         assert "# Extraction Schema" in yaml_str
         assert "name:" in yaml_str
@@ -35,8 +28,6 @@ class TestSchemaConverter:
 
     def test_json_to_yaml_nested(self):
         """Test converting nested JSON Schema to YAML."""
-        converter = SchemaConverter()
-
         schema = {
             "type": "object",
             "properties": {
@@ -56,7 +47,7 @@ class TestSchemaConverter:
             },
         }
 
-        yaml_str = converter.json_to_yaml_chunks(schema)
+        yaml_str = json_to_yaml(schema)
 
         assert "person:" in yaml_str
         assert "name:" in yaml_str
@@ -66,8 +57,6 @@ class TestSchemaConverter:
 
     def test_json_to_yaml_array(self):
         """Test converting JSON Schema with arrays to YAML."""
-        converter = SchemaConverter()
-
         schema = {
             "type": "object",
             "properties": {
@@ -81,15 +70,13 @@ class TestSchemaConverter:
             },
         }
 
-        yaml_str = converter.json_to_yaml_chunks(schema)
+        yaml_str = json_to_yaml(schema)
 
         assert "items:" in yaml_str
         assert "Array" in yaml_str
 
     def test_json_to_yaml_with_descriptions(self):
         """Test converting schema with descriptions."""
-        converter = SchemaConverter()
-
         schema = {
             "type": "object",
             "properties": {
@@ -101,7 +88,7 @@ class TestSchemaConverter:
             },
         }
 
-        yaml_str = converter.json_to_yaml_chunks(schema)
+        yaml_str = json_to_yaml(schema)
 
         assert "email" in yaml_str
         # Description text should be included as a comment
@@ -109,8 +96,6 @@ class TestSchemaConverter:
 
     def test_json_to_yaml_required(self):
         """Test that required fields are marked."""
-        converter = SchemaConverter()
-
         schema = {
             "type": "object",
             "properties": {
@@ -120,7 +105,7 @@ class TestSchemaConverter:
             "required": ["required_field"],
         }
 
-        yaml_str = converter.json_to_yaml_chunks(schema)
+        yaml_str = json_to_yaml(schema)
 
         assert "required_field" in yaml_str
         assert "optional_field" in yaml_str

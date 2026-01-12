@@ -19,97 +19,65 @@ class RLMConfig:
     """
 
     # Model configuration
-    # Model for orchestration (always text-based)
     root_model: str
-
-    # Model for text document extraction
     worker_text_model: str
 
+    # LM parameters
+    root_max_tokens: int = 8192
+    worker_max_tokens: int = 4096
+    temperature: float = 0.3
+
     # Chunking
-    # Characters per text chunk (splits at nearest space)
     chunk_size: int = 2000
 
     # Worker behavior
-    # Detail level of chunk gists
     summary_level: Literal["minimal", "standard", "verbose"] = "standard"
 
     # Parallelism control
-    # Use parallel processing for initial extraction pass
     parallel_first_pass: bool = True
-
-    # Use parallel processing for re-extraction retries
     parallel_retry: bool = False
-
-    # Maximum concurrent API calls
     max_parallel_workers: int = 5
 
     # Execution limits
-    # Maximum RLM orchestration turns
     max_turns: int = 5
-
-    # Seconds before code execution timeout
     code_execution_timeout: int = 30
 
     # User context limits
-    # Maximum characters allowed in user_context parameter
-    max_user_context_chars: int = 10_000  # ~2,500 tokens
+    max_user_context_chars: int = 10_000
 
     # Retry limits
-    # Maximum re-extraction attempts per chunk before giving up
     max_retries: int = 3
 
-    # Internal state (filled by configure_dspy)
+    # Internal state
     _root_lm: dspy.LM = field(init=False, repr=False)
     _worker_text_lm: dspy.LM = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Validate configuration values."""
+        """Validate configuration values and initialize LMs."""
         valid_summary_levels = {"minimal", "standard", "verbose"}
         if self.summary_level not in valid_summary_levels:
             raise ValueError(
                 f"Invalid summary_level: {self.summary_level!r}. "
                 f"Must be one of: {', '.join(sorted(valid_summary_levels))}"
             )
+        self._configure_lms()
 
-    def configure_dspy(self) -> None:
-        """Configure DSPy with the root LM as default.
+    def _create_lm(self, model_name: str, max_tokens: int) -> dspy.LM:
+        """Create a DSPy LM instance."""
+        return dspy.LM(model_name, max_tokens=max_tokens, temperature=self.temperature)
 
-        DSPy uses litellm internally which will automatically read API keys
-        from environment variables. Ensure your API keys are set before running.
-        """
-        # Configure root LM (orchestrator)
-        self._root_lm = dspy.LM(
-            self.root_model,
-            max_tokens=8192,
-            temperature=0.3,
-        )
-
-        # Configure worker LM
-        self._worker_text_lm = dspy.LM(
-            self.worker_text_model,
-            max_tokens=4096,
-            temperature=0.3,
-        )
-
-        # Set root LM as DSPy default
+    def _configure_lms(self) -> None:
+        """Configure both LMs and set root as DSPy default."""
+        self._root_lm = self._create_lm(self.root_model, self.root_max_tokens)
+        self._worker_text_lm = self._create_lm(self.worker_text_model, self.worker_max_tokens)
         dspy.configure(lm=self._root_lm, track_usage=True)
 
-    def get_root_lm(self) -> dspy.LM:
-        """Get the root LM instance.
-
-        Returns:
-            Configured root LM for orchestration
-        """
-        if not hasattr(self, "_root_lm"):
-            self.configure_dspy()
+    @property
+    def root_lm(self) -> dspy.LM:
+        """Get the root LM instance."""
         return self._root_lm
 
-    def get_worker_lm(self) -> dspy.LM:
-        """Get the worker LM instance.
-
-        Returns:
-            Configured worker LM for extraction
-        """
-        if not hasattr(self, "_worker_text_lm"):
-            self.configure_dspy()
+    @property
+    def worker_lm(self) -> dspy.LM:
+        """Get the worker LM instance."""
         return self._worker_text_lm

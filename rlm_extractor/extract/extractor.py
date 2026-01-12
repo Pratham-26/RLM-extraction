@@ -16,14 +16,10 @@ from dataclasses import dataclass, field
 import dspy
 
 from rlm_extractor.config import RLMConfig
-from rlm_extractor.extract.chunker import (
-    ALL_SUPPORTED_EXTENSIONS,
-    Chunk,
-    Chunker,
-)
+from rlm_extractor.extract.chunker import SUPPORTED_EXTENSIONS, Chunk, chunk_file, chunk_text
 from rlm_extractor.extract.processor import ChunkProcessingResult as ChunkResult
 from rlm_extractor.extract.processor import ChunkProcessor
-from rlm_extractor.extract.schema import SchemaConverter
+from rlm_extractor.extract.schema import json_to_yaml, yaml_to_json
 from rlm_extractor.logger import CallLogger
 from rlm_extractor.repl import REPLState
 from rlm_extractor.signatures import RootExtractionSignature
@@ -90,13 +86,8 @@ class RLMExtractor(dspy.Module):
         super().__init__()
         self.config = config
 
-        # Configure DSPy
-        if not hasattr(config, "_root_lm"):
-            config.configure_dspy()
-
         # Initialize components
-        self.schema_converter = SchemaConverter()
-        self.chunker = Chunker(chunk_size=config.chunk_size)
+        self.chunk_size = config.chunk_size
         self.repl = REPLState(summary_level=config.summary_level)
 
         # Root LM predictor
@@ -129,13 +120,13 @@ class RLMExtractor(dspy.Module):
         self._validate_inputs(json_schema, document)
 
         # Get worker LM
-        worker_lm = self.config.get_worker_lm()
+        worker_lm = self.config.worker_lm
 
         # Initialize logger
         logger = CallLogger()
 
         # Convert schema
-        yaml_schema = self.schema_converter.json_to_yaml_chunks(json_schema)
+        yaml_schema = json_to_yaml(json_schema)
 
         # Chunk the document
         chunks = self._chunk_document(document)
@@ -157,9 +148,7 @@ class RLMExtractor(dspy.Module):
         # Condense user context if provided
         condensed_guidance = ""
         if user_context:
-            self._validate_user_context(user_context)
-            sanitized_context = self._sanitize_user_context(user_context)
-            condensed_guidance = self._condense_user_context(sanitized_context, yaml_schema, logger)
+            condensed_guidance = self._prepare_user_context(user_context, yaml_schema, logger)
             self.repl.set_condensed_guidance(condensed_guidance)
 
         # Create chunk processor
@@ -209,7 +198,7 @@ class RLMExtractor(dspy.Module):
                     break
 
         # Convert results back to JSON
-        final_json = self.schema_converter.yaml_to_json(
+        final_json = yaml_to_json(
             json.dumps(self.repl.results_so_far),
             json_schema,
         )
@@ -238,142 +227,55 @@ class RLMExtractor(dspy.Module):
         json_schema: dict,
         document: str | list[str],
     ) -> None:
-        """Validate input parameters.
-
-        Raises:
-            ValueError: If inputs are invalid
-            TypeError: If document types are incorrect
-        """
+        """Validate input parameters."""
         # Validate json_schema
-        if json_schema is None:
-            raise ValueError("json_schema cannot be None")
-        if not isinstance(json_schema, dict):
-            raise TypeError(f"json_schema must be a dict, got {type(json_schema).__name__}")
-        if not json_schema:
-            raise ValueError("json_schema cannot be empty")
-        if "type" not in json_schema:
-            raise ValueError("json_schema must have a 'type' field (e.g., 'type': 'object')")
+        if not json_schema or not isinstance(json_schema, dict) or "type" not in json_schema:
+            raise ValueError("json_schema must be a non-empty dict with a 'type' field")
 
         # Validate document
         if document is None:
             raise ValueError("document cannot be None")
+        if isinstance(document, str) and not document.strip():
+            raise ValueError("document string cannot be empty")
+        if isinstance(document, list) and not document:
+            raise ValueError("document list cannot be empty")
 
-        if isinstance(document, str):
-            # File paths are allowed, so only check if it's empty content (not a file)
-            if not document.strip():
-                raise ValueError("document string cannot be empty")
-            # If it looks like a file path but doesn't exist, that's an error
-            if os.path.exists(document) or os.path.exists(os.path.abspath(document)):
-                # File exists - validate extension
-                abs_path = os.path.abspath(document)
-                ext = os.path.splitext(abs_path)[1].lower()
-                if ext not in ALL_SUPPORTED_EXTENSIONS:
-                    raise ValueError(
-                        f"Unsupported file type: {ext}. "
-                        f"Supported: {', '.join(sorted(ALL_SUPPORTED_EXTENSIONS))}"
-                    )
-        elif isinstance(document, list):
-            if len(document) == 0:
-                raise ValueError("document list cannot be empty")
-
-            # Validate list element types
-            first = document[0]
-            if not isinstance(first, str):
-                raise TypeError(
-                    f"document list must contain str (file paths), "
-                    f"got {type(first).__name__}"
-                )
-
-            # Check all elements are same type
-            for i, item in enumerate(document):
-                if type(item) is not type(first):
-                    raise TypeError(
-                        f"document list must contain consistent types; "
-                        f"element 0 is {type(first).__name__} but element {i} is {type(item).__name__}"
-                    )
-        else:
-            raise TypeError(
-                f"document must be str or list[str] (file paths), "
-                f"got {type(document).__name__}"
-            )
-
-    def _validate_user_context(self, user_context: str) -> None:
-        """Validate user_context parameter.
-
-        Args:
-            user_context: User-provided context string
-
-        Raises:
-            TypeError: If user_context is not a string
-            ValueError: If user_context is empty, too short, or too long
-        """
+    def _prepare_user_context(
+        self, user_context: str, yaml_schema: str, logger: CallLogger
+    ) -> str:
+        """Validate, sanitize, and condense user context."""
+        # Validate
         if not isinstance(user_context, str):
-            raise TypeError(f"user_context must be a string, got {type(user_context).__name__}")
-
-        if len(user_context) == 0:
-            raise ValueError("user_context cannot be empty")
+            raise TypeError("user_context must be a string")
 
         if len(user_context) < MIN_USER_CONTEXT_CHARS:
-            raise ValueError(
-                f"user_context is too short ({len(user_context)} chars). "
-                f"Minimum: {MIN_USER_CONTEXT_CHARS} chars. "
-                f"If you don't need additional context, omit the parameter."
-            )
+            raise ValueError(f"user_context is too short (minimum {MIN_USER_CONTEXT_CHARS} chars)")
 
         max_chars = self.config.max_user_context_chars
         if len(user_context) > max_chars:
-            raise ValueError(
-                f"user_context is too long ({len(user_context)} chars). "
-                f"Maximum: {max_chars:,} chars. "
-                f"You can increase this by setting max_user_context_chars in RLMConfig."
-            )
+            raise ValueError(f"user_context is too long (maximum {max_chars} chars)")
 
-    def _sanitize_user_context(self, user_context: str) -> str:
-        """Sanitize user context to reduce injection risk.
-
-        Args:
-            user_context: Raw user-provided context
-
-        Returns:
-            Sanitized context string
-        """
-        # Remove control characters except newlines and tabs
+        # Sanitize: remove control chars and limit repeated newlines
         sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", user_context)
-        # Limit repeated newlines (max 2 consecutive)
-        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
-        return sanitized.strip()
+        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized).strip()
 
-    def _condense_user_context(
-        self, user_context: str, yaml_schema: str, logger: CallLogger
-    ) -> str:
-        """Have Root LM condense user context into extraction guidance.
-
-        Args:
-            user_context: User-provided context and instructions
-            yaml_schema: YAML schema for extraction
-            logger: CallLogger instance
-
-        Returns:
-            Condensed guidance (2-4 sentences) for Worker LMs
-        """
+        # Condense with Root LM
         from rlm_extractor.signatures import ContextCondensationSignature
 
         condenser = dspy.Predict(ContextCondensationSignature)
+        root_lm = self.config.root_lm
 
-        # Log request
-        root_lm = self.config.get_root_lm()
         call_id = logger.log_request(
             lm_type="root",
             model=str(root_lm),
             signature="ContextCondensationSignature",
             call_type="context_condensation",
-            request={"user_context": user_context, "yaml_schema": yaml_schema},
+            request={"user_context": sanitized, "yaml_schema": yaml_schema},
         )
 
         with dspy.context(lm=root_lm):
-            result = condenser(user_context=user_context, yaml_schema=yaml_schema)
+            result = condenser(user_context=sanitized, yaml_schema=yaml_schema)
 
-        # Log response
         logger.log_response(
             call_id=call_id,
             response={"condensed_guidance": getattr(result, "condensed_guidance", "")},
@@ -381,46 +283,25 @@ class RLMExtractor(dspy.Module):
 
         return getattr(result, "condensed_guidance", "")
 
-    def _is_file_path(self, document: str) -> bool:
-        """Check if a string is a file path vs. document content.
-
-        Args:
-            document: String to check
-
-        Returns:
-            True if the string appears to be a valid file path
-        """
-        if not document or len(document) > 1024:
-            # Reasonable path length limit
-            return False
-
-        # Check if file exists
-        if os.path.exists(document):
-            return True
-
-        # Check if absolute path exists
-        abs_path = os.path.abspath(document)
-        if os.path.exists(abs_path):
-            return True
-
-        return False
-
     def _chunk_document(
         self,
         document: str | list[str],
     ) -> list:
         """Chunk the document for processing."""
         if isinstance(document, str):
-            # Check if it's a file path
-            if self._is_file_path(document):
-                return self.chunker.chunk_file(document)
-            return self.chunker.chunk_text(document)
+            # Check if it's a file path (exists or reasonable path length)
+            is_file = document and len(document) <= 1024 and (
+                os.path.exists(document) or os.path.exists(os.path.abspath(document))
+            )
+            if is_file:
+                return chunk_file(document, self.chunk_size)
+            return chunk_text(document, self.chunk_size)
         else:
             # List of file paths
             chunks = []
             next_idx = 0
             for path in document:
-                file_chunks = self.chunker.chunk_file(path)
+                file_chunks = chunk_file(path, self.chunk_size)
                 # Adjust chunk indices to maintain sequential order
                 for chunk in file_chunks:
                     chunk.idx = next_idx
@@ -459,17 +340,6 @@ class RLMExtractor(dspy.Module):
             "completion_rate": self.repl.get_completion_rate(),
         }
 
-    def _should_finalize(self, results: list[ChunkResult]) -> bool:
-        """Determine if we should finalize extraction."""
-        # Finalize if all chunks processed successfully
-        completion_rate = self.repl.get_completion_rate()
-        success_count = sum(1 for r in results if r.success)
-        total = len(results)
-        success_rate = success_count / max(total, 1)
-
-        # Finalize if 100% complete OR if >80% success rate
-        return completion_rate >= 1.0 or success_rate >= 0.8
-
     def _process_root_decision(
         self,
         task: str,
@@ -480,14 +350,28 @@ class RLMExtractor(dspy.Module):
         logger: CallLogger,
     ) -> str:
         """Process Root LM decision for next action."""
-        # Format trajectory for Root LM
-        trajectory_str = self._format_trajectory(trajectory)
+        # Format trajectory inline
+        if trajectory:
+            trajectory_lines = []
+            for i, entry in enumerate(trajectory, 1):
+                action = entry.get("action", "unknown")
+                if action == "parallel_extraction":
+                    trajectory_lines.append(
+                        f"Turn {i}: Parallel extraction - "
+                        f"{entry.get('successful', 0)} successful, "
+                        f"{entry.get('failed', 0)} failed"
+                    )
+                else:
+                    trajectory_lines.append(f"Turn {i}: {action}")
+            trajectory_str = "\n".join(trajectory_lines)
+        else:
+            trajectory_str = "No previous actions."
 
         # Get field completion summary
         field_completion = self.repl.get_field_completion_summary()
 
         # Log request
-        root_lm = self.config.get_root_lm()
+        root_lm = self.config.root_lm
         request_payload = {
             "task": task,
             "trajectory": trajectory_str,
@@ -536,8 +420,15 @@ class RLMExtractor(dspy.Module):
         if action == "finalize" or "finalize" in action:
             return "finalize"
         elif "re_extract" in action or "re-extract" in action:
-            # Extract target chunk and prompt
-            target_chunk = self._extract_target_chunk(result)
+            # Extract target chunk inline
+            target_str = getattr(result, "target_chunk", None)
+            target_chunk = None
+            if target_str is not None:
+                try:
+                    target_chunk = int(target_str)
+                except (ValueError, TypeError):
+                    match = re.search(r"\d+", str(target_str))
+                    target_chunk = int(match.group()) if match else None
             targeted_prompt = getattr(result, "targeted_prompt", "")
 
             if target_chunk is not None and 0 <= target_chunk < len(chunks):
@@ -550,41 +441,6 @@ class RLMExtractor(dspy.Module):
                 self._process_worker_results([chunk_result], chunks)
 
         return action
-
-    def _format_trajectory(self, trajectory: list[dict]) -> str:
-        """Format trajectory for Root LM prompt."""
-        if not trajectory:
-            return "No previous actions."
-
-        lines = []
-        for i, entry in enumerate(trajectory, 1):
-            action = entry.get("action", "unknown")
-            if action == "parallel_extraction":
-                lines.append(
-                    f"Turn {i}: Parallel extraction - "
-                    f"{entry.get('successful', 0)} successful, "
-                    f"{entry.get('failed', 0)} failed, "
-                    f"{entry.get('completion_rate', 0):.1%} complete"
-                )
-            else:
-                lines.append(f"Turn {i}: {action}")
-
-        return "\n".join(lines)
-
-    def _extract_target_chunk(self, result: dspy.Prediction) -> int | None:
-        """Extract target chunk index from Root LM result."""
-        target_str = getattr(result, "target_chunk", None)
-        if target_str is None:
-            return None
-
-        try:
-            return int(target_str)
-        except (ValueError, TypeError):
-            # Try to extract number from string
-            import re
-
-            match = re.search(r"\d+", str(target_str))
-            return int(match.group()) if match else None
 
     def _compile_failures(self, chunks: list[Chunk]) -> list[dict]:
         """Compile failure information."""

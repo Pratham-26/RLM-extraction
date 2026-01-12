@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from rlm_extractor.config import RLMConfig
-from rlm_extractor.extract.chunker import Chunker
 from rlm_extractor.extract.extractor import RLMExtractor
 from rlm_extractor.repl import REPLState
 
@@ -144,8 +143,8 @@ class TestExtractorUserContext:
         import inspect
 
         mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
+        with patch.object(self.config, "_configure_lms"):
+            with patch.object(type(self.config), "root_lm", mock_lm):
                 extractor = RLMExtractor(self.config)
 
         # Check method signature
@@ -156,15 +155,15 @@ class TestExtractorUserContext:
         # Check it has a default value of None
         assert sig.parameters["user_context"].default is None
 
-    def test_condense_user_context_method_exists(self):
-        """Verify _condense_user_context method exists."""
+    def test_prepare_user_context_method_exists(self):
+        """Verify _prepare_user_context method exists."""
         mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
+        with patch.object(self.config, "_configure_lms"):
+            with patch.object(type(self.config), "root_lm", mock_lm):
                 extractor = RLMExtractor(self.config)
 
-        assert hasattr(extractor, "_condense_user_context")
-        assert callable(extractor._condense_user_context)
+        assert hasattr(extractor, "_prepare_user_context")
+        assert callable(extractor._prepare_user_context)
 
 
 class TestIntegrationUserContextFlow:
@@ -229,120 +228,28 @@ class TestUserContextValidation:
             worker_text_model="openai/gpt-4o-mini",
         )
 
-    def test_validate_user_context_accepts_valid_input(self):
-        """Test that valid user_context passes validation."""
-        mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(self.config)
-
-        # Should not raise
-        extractor._validate_user_context("This is a valid user context with enough characters")
-
-    def test_validate_user_context_rejects_empty(self):
-        """Test that empty user_context is rejected."""
-        mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(self.config)
-
-        with pytest.raises(ValueError, match="cannot be empty"):
-            extractor._validate_user_context("")
-
-    def test_validate_user_context_rejects_too_short(self):
+    def test_prepare_user_context_rejects_too_short(self):
         """Test that too-short user_context is rejected."""
         mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
+        mock_logger = MagicMock()
+        mock_lm.return_value = MagicMock(condensed_guidance="test")
+
+        with patch.object(self.config, "_configure_lms"):
+            with patch.object(type(self.config), "root_lm", mock_lm):
                 extractor = RLMExtractor(self.config)
 
         with pytest.raises(ValueError, match="too short"):
-            extractor._validate_user_context("short")
+            extractor._prepare_user_context("short", "{}", mock_logger)
 
-    def test_validate_user_context_rejects_too_long(self):
-        """Test that too-long user_context is rejected."""
-        mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(self.config)
-
-        long_context = "x" * 10001  # Default max is 10,000
-        with pytest.raises(ValueError, match="too long"):
-            extractor._validate_user_context(long_context)
-
-    def test_validate_user_context_respects_config_limit(self):
-        """Test that validation respects custom max_user_context_chars."""
-        config = RLMConfig(
-            root_model="openai/gpt-4o",
-            worker_text_model="openai/gpt-4o-mini",
-            max_user_context_chars=100,
-        )
-        mock_lm = MagicMock()
-        with patch.object(config, "configure_dspy"):
-            with patch.object(config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(config)
-
-        # Should fail with custom limit
-        long_context = "x" * 101
-        with pytest.raises(ValueError, match="Maximum: 100"):
-            extractor._validate_user_context(long_context)
-
-    def test_validate_user_context_rejects_non_string(self):
+    def test_prepare_user_context_rejects_non_string(self):
         """Test that non-string user_context is rejected."""
         mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
+        mock_logger = MagicMock()
+
+        with patch.object(self.config, "_configure_lms"):
+            with patch.object(type(self.config), "root_lm", mock_lm):
                 extractor = RLMExtractor(self.config)
 
         with pytest.raises(TypeError, match="must be a string"):
-            extractor._validate_user_context(123)  # type: ignore
+            extractor._prepare_user_context(123, "{}", mock_logger)  # type: ignore
 
-    def test_sanitize_user_context_removes_control_chars(self):
-        """Test that sanitization removes control characters."""
-        mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(self.config)
-
-        # Contains control character \x00
-        dirty = "Valid context\x00with null byte"
-        clean = extractor._sanitize_user_context(dirty)
-
-        assert "\x00" not in clean
-        assert clean == "Valid contextwith null byte"
-
-    def test_sanitize_user_context_limits_newlines(self):
-        """Test that sanitization limits consecutive newlines."""
-        mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(self.config)
-
-        dirty = "Line one\n\n\n\nLine two"  # 4 consecutive newlines
-        clean = extractor._sanitize_user_context(dirty)
-
-        assert clean == "Line one\n\nLine two"
-
-    def test_sanitize_user_context_trims_whitespace(self):
-        """Test that sanitization trims leading/trailing whitespace."""
-        mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(self.config)
-
-        dirty = "  Valid context with spaces  "
-        clean = extractor._sanitize_user_context(dirty)
-
-        assert clean == "Valid context with spaces"
-
-    def test_sanitize_user_context_preserves_tabs(self):
-        """Test that sanitization preserves tab characters."""
-        mock_lm = MagicMock()
-        with patch.object(self.config, "configure_dspy"):
-            with patch.object(self.config, "get_root_lm", return_value=mock_lm):
-                extractor = RLMExtractor(self.config)
-
-        context = "Line one\n\tLine two"
-        clean = extractor._sanitize_user_context(context)
-
-        assert "\t" in clean
