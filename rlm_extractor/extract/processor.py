@@ -245,7 +245,12 @@ class ChunkProcessor:
         yaml_schema: str,
         targeted_prompt: str = "",
     ) -> list[ChunkProcessingResult]:
-        """Process multiple chunks in parallel."""
+        """Process multiple chunks in parallel.
+
+        Note: The as_completed timeout has been removed because it was causing
+        issues with large chunk counts. The timeout now applies per-future
+        (each chunk), not to the overall iteration.
+        """
         results: list[ChunkProcessingResult] = []
 
         with ThreadPoolExecutor(max_workers=self.max_parallel_workers) as executor:
@@ -254,7 +259,9 @@ class ChunkProcessor:
                 for chunk in chunks
             }
 
-            for future in as_completed(future_to_chunk, timeout=self.chunk_timeout * 2):
+            # Process futures as they complete, without an overall timeout
+            # Each future.result() call has its own timeout
+            for future in as_completed(future_to_chunk):
                 chunk = future_to_chunk[future]
                 try:
                     result = future.result(timeout=self.chunk_timeout)

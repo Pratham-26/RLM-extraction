@@ -41,13 +41,13 @@ class RLMConfig:
 
     # Parallelism control
     parallel_first_pass: bool = True
-    parallel_retry: bool = False
+    parallel_retry: bool = True  # Enable parallel retry instead of sequential one-at-a-time
     max_parallel_workers: int = 5
 
     # Execution limits
     max_turns: int = 5
     code_execution_timeout: int = 30
-    chunk_timeout: int = 600  # Timeout per chunk in seconds (default: 10 minutes)
+    chunk_timeout: int = 300  # Timeout per chunk in seconds (default: 5 minutes)
 
     # User context limits
     max_user_context_chars: int = 10_000
@@ -57,6 +57,11 @@ class RLMConfig:
 
     # Context efficiency
     compact_schema: bool = False  # Use compact YAML schema to save tokens
+
+    # Root LM context compaction (prevents linear growth with chunk count)
+    max_entity_contexts_per_field: int = 50  # Max contexts to send to Root LM per field
+    max_chunk_summaries_for_root: int = 20  # Max chunk summaries to include
+    enable_context_compaction: bool = True  # Use intelligent compaction vs truncation
 
     # Internal state
     _root_lm: dspy.LM = field(init=False, repr=False)

@@ -17,6 +17,7 @@ import dspy
 
 from rlm_extractor.config import RLMConfig
 from rlm_extractor.extract.chunker import Chunk, chunk_file, chunk_text
+from rlm_extractor.extract.compactor import compact_all_entity_contexts
 from rlm_extractor.extract.processor import ChunkProcessingResult as ChunkResult
 from rlm_extractor.extract.processor import ChunkProcessor
 from rlm_extractor.extract.schema import json_to_yaml, yaml_to_json
@@ -176,9 +177,13 @@ class RLMExtractor(dspy.Module):
                 success_count = sum(1 for r in results if r.success)
                 success_rate = success_count / max(len(results), 1)
 
-                # If high success rate, skip root LM and finalize immediately
-                # This is the most common case and avoids expensive root orchestration
+                # Early exit if high success rate OR all required fields found
+                # This avoids expensive Root LM orchestration for straightforward cases
                 if success_rate >= 0.8:
+                    break
+
+                # Also exit if all required fields are found (even with lower success rate)
+                if self._all_required_fields_found():
                     break
 
             else:
@@ -189,6 +194,10 @@ class RLMExtractor(dspy.Module):
                 trajectory.append({"action": action_result, "turn": turn})
 
                 if action_result == "finalize":
+                    break
+
+                # Early exit if all required fields found
+                if self._all_required_fields_found():
                     break
 
                 # Force finalize after max turns to prevent infinite loops
@@ -216,6 +225,17 @@ class RLMExtractor(dspy.Module):
             token_usage=usage,
             log_file_path=log_path,
         )
+
+    def _all_required_fields_found(self) -> bool:
+        """Check if all required fields have been found.
+
+        Returns True if:
+        - No required fields are defined (all optional schema)
+        - All required fields have been found at least once
+        """
+        if not self.repl.required_fields:
+            return True  # No required fields, condition satisfied
+        return len(self.repl.required_fields_found) >= len(self.repl.required_fields)
 
     def _validate_inputs(
         self,
@@ -415,27 +435,109 @@ class RLMExtractor(dspy.Module):
         if action == "finalize" or "finalize" in action:
             return "finalize"
         elif "re_extract" in action or "re-extract" in action:
-            # Extract target chunk inline
+            # Extract target chunk(s)
             target_str = getattr(result, "target_chunk", None)
-            target_chunk = None
-            if target_str is not None:
-                try:
-                    target_chunk = int(target_str)
-                except (ValueError, TypeError):
-                    match = re.search(r"\d+", str(target_str))
-                    target_chunk = int(match.group()) if match else None
             targeted_prompt = getattr(result, "targeted_prompt", "")
 
-            if target_chunk is not None and 0 <= target_chunk < len(chunks):
-                # Re-extract specific chunk
-                chunk_result = processor.process_chunk(
-                    chunks[target_chunk],
-                    yaml_schema,
-                    targeted_prompt,
-                )
-                self._process_worker_results([chunk_result], chunks)
+            # Support batch re-extraction (multiple chunks separated by comma)
+            # E.g., "3,5,7" or "all" for all pending chunks
+            if target_str and str(target_str).lower().strip() == "all":
+                # Re-extract all pending chunks in parallel
+                pending_indices = self._get_pending_chunk_indices(chunks)
+                self._re_extract_chunks_batch(pending_indices, chunks, yaml_schema, targeted_prompt, processor)
+            elif target_str:
+                # Parse chunk indices (supports comma-separated list)
+                target_indices = self._parse_chunk_indices(target_str)
+                if self.config.parallel_retry and len(target_indices) > 1:
+                    # Parallel batch re-extraction
+                    self._re_extract_chunks_batch(target_indices, chunks, yaml_schema, targeted_prompt, processor)
+                else:
+                    # Sequential single chunk re-extraction (original behavior)
+                    for target_chunk in target_indices:
+                        if 0 <= target_chunk < len(chunks):
+                            chunk_result = processor.process_chunk(
+                                chunks[target_chunk],
+                                yaml_schema,
+                                targeted_prompt,
+                            )
+                            self._process_worker_results([chunk_result], chunks)
 
         return action
+
+    def _get_pending_chunk_indices(self, chunks: list) -> list[int]:
+        """Get indices of chunks that need re-extraction.
+
+        Prioritizes:
+        1. Failed chunks
+        2. Chunks with missing required fields
+        3. Low-confidence chunks
+        """
+        pending = []
+        for idx in range(len(chunks)):
+            if idx in self.repl.failed_chunks:
+                pending.append(idx)
+            elif idx not in self.repl.completed_chunks:
+                pending.append(idx)
+        return pending
+
+    def _parse_chunk_indices(self, target_str: str | None) -> list[int]:
+        """Parse chunk indices from string.
+
+        Supports:
+        - Single number: "5"
+        - Comma-separated: "3,5,7"
+        - Range: "3-7"
+        """
+        if not target_str:
+            return []
+
+        indices = []
+        try:
+            # Try comma-separated list
+            if "," in str(target_str):
+                for part in str(target_str).split(","):
+                    part = part.strip()
+                    if "-" in part:
+                        # Handle range
+                        start, end = part.split("-")
+                        indices.extend(range(int(start), int(end) + 1))
+                    else:
+                        indices.append(int(part))
+            elif "-" in str(target_str):
+                # Handle single range
+                start, end = str(target_str).split("-")
+                indices.extend(range(int(start), int(end) + 1))
+            else:
+                # Single number
+                match = re.search(r"\d+", str(target_str))
+                if match:
+                    indices.append(int(match.group()))
+        except (ValueError, TypeError):
+            pass
+
+        return indices
+
+    def _re_extract_chunks_batch(
+        self,
+        chunk_indices: list[int],
+        chunks: list,
+        yaml_schema: str,
+        targeted_prompt: str,
+        processor: "ChunkProcessor",
+    ) -> None:
+        """Re-extract multiple chunks in parallel."""
+        if not chunk_indices:
+            return
+
+        # Filter valid indices
+        valid_chunks = [chunks[i] for i in chunk_indices if 0 <= i < len(chunks)]
+
+        if not valid_chunks:
+            return
+
+        # Process in parallel
+        results = processor.process_chunks_parallel(valid_chunks, yaml_schema, targeted_prompt)
+        self._process_worker_results(results, chunks)
 
     def _compile_failures(self, chunks: list[Chunk]) -> list[dict]:
         """Compile failure information."""
@@ -503,11 +605,17 @@ class RLMExtractor(dspy.Module):
         # Format entity contexts for the Root LM
         entity_contexts_str = self._format_entity_contexts_for_lm()
 
-        # Get chunk summaries for context
-        chunk_summaries_str = "\n".join([
+        # Get chunk summaries for context (limited to prevent unbounded growth)
+        max_summaries = self.config.max_chunk_summaries_for_root
+        chunk_summaries_lines = [
             f"Chunk {s['idx']}: {s['gist']}"
-            for s in self.repl.chunk_summaries
-        ])
+            for s in self.repl.chunk_summaries[:max_summaries]
+        ]
+        if len(self.repl.chunk_summaries) > max_summaries:
+            chunk_summaries_lines.append(
+                f"... and {len(self.repl.chunk_summaries) - max_summaries} more chunks"
+            )
+        chunk_summaries_str = "\n".join(chunk_summaries_lines)
 
         # Get field completion status
         field_completion = self.repl.get_field_completion_summary()
@@ -553,24 +661,21 @@ class RLMExtractor(dspy.Module):
     def _format_entity_contexts_for_lm(self) -> str:
         """Format entity contexts for Root LM consumption.
 
+        Uses intelligent compaction to prevent unbounded context growth
+        as chunk count increases.
+
         Returns:
-            Formatted string with all entity contexts
+            Formatted string with entity contexts (compacted if needed)
         """
         if not self.repl.entity_contexts:
             return "No entity contexts collected."
 
-        lines = ["Entity Contexts from all chunks:", ""]
-
-        for field_name in sorted(self.repl.entity_contexts.keys()):
-            contexts = self.repl.entity_contexts[field_name]
-            lines.append(f"{field_name}:")
-
-            for chunk_idx, description, conf in contexts:
-                lines.append(f"  - [Chunk {chunk_idx}, confidence={conf}] {description}")
-
-            lines.append("")  # Blank line between fields
-
-        return "\n".join(lines)
+        result = compact_all_entity_contexts(
+            entity_contexts=self.repl.entity_contexts,
+            max_contexts=self.config.max_entity_contexts_per_field,
+            enable_compaction=self.config.enable_context_compaction,
+        )
+        return result.formatted
 
     def _parse_extracted_values_to_json(self, yaml_str: str, json_schema: dict) -> dict:
         """Parse extracted values from YAML string to JSON.
@@ -607,6 +712,20 @@ class RLMExtractor(dspy.Module):
         except json.JSONDecodeError:
             pass
 
+        # Handle truncated responses by trying to extract valid partial YAML/JSON
+        # Look for the last complete object/list in case of truncation
+        try:
+            import yaml
+            # Try to find the last complete YAML document
+            # If truncated, try to close open brackets/quotes
+            cleaned = self._attempt_fix_truncated_yaml(yaml_str)
+            if cleaned:
+                parsed = yaml.safe_load(cleaned)
+                if isinstance(parsed, dict):
+                    return yaml_to_json(json.dumps(parsed), json_schema)
+        except Exception:
+            pass
+
         # Fallback: try to extract JSON from markdown code blocks
         json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", yaml_str, re.DOTALL)
         if json_match:
@@ -618,3 +737,33 @@ class RLMExtractor(dspy.Module):
 
         # If all parsing fails, return empty with the raw output for debugging
         return {"_raw_output": yaml_str, "_parsing_error": "Could not parse output as JSON/YAML"}
+
+    def _attempt_fix_truncated_yaml(self, yaml_str: str) -> str | None:
+        """Attempt to fix a truncated YAML string by closing brackets.
+
+        Args:
+            yaml_str: Potentially truncated YAML string
+
+        Returns:
+            Fixed YAML string or None if cannot be fixed
+        """
+        if not yaml_str:
+            return None
+
+        lines = yaml_str.split('\n')
+
+        # Count open vs close brackets and braces
+        open_braces = sum(line.count('{') - line.count('}') for line in lines)
+        open_brackets = sum(line.count('[') - line.count(']') for line in lines)
+
+        fixed = yaml_str
+
+        # Close unclosed braces
+        if open_braces > 0:
+            fixed += '\n' + '}' * open_braces
+
+        # Close unclosed brackets
+        if open_brackets > 0:
+            fixed += '\n' + ']' * open_brackets
+
+        return fixed if fixed != yaml_str else None

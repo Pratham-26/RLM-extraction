@@ -26,7 +26,7 @@ class TestRLMConfig:
         assert config.chunk_size == 2000
         assert config.summary_level == "standard"
         assert config.parallel_first_pass is True
-        assert config.parallel_retry is False
+        assert config.parallel_retry is True  # Changed default to True for faster retry processing
         assert config.max_parallel_workers == 5
         assert config.max_turns == 5
         assert config.code_execution_timeout == 30
