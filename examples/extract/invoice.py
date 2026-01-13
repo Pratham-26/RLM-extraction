@@ -6,7 +6,6 @@ using the RLM schema extraction system.
 
 import os
 from rlm_extractor import RLMExtractor, RLMConfig
-from rlm_extractor.extract import Chunker
 
 
 # Sample invoice document (in practice, this would be a much larger file)
