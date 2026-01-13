@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 RLM (Recursive Language Model) is a Python implementation that enables LLMs to process arbitrarily long documents beyond their context window limits. The document is treated as an external environment that the LLM interacts with programmatically via a Python REPL.
 
-**Tech Stack**: Python 3.10+, DSPy (orchestration), litellm (model routing), Pydantic (config)
+**Tech Stack**: Python 3.10+, DSPy (orchestration), litellm (model routing), Pydantic (config), pypdf (PDF text extraction)
 
 ## Common Commands
 
@@ -28,9 +28,9 @@ uv run python examples/extract/invoice.py
 
 **Code quality:**
 ```bash
-uv run black rlm              # Format (line-length: 100)
-uv run ruff check rlm         # Lint
-uv run mypy rlm               # Type check
+uv run black rlm_extractor              # Format (line-length: 100)
+uv run ruff check rlm_extractor         # Lint
+uv run mypy rlm_extractor               # Type check
 ```
 
 ## Architecture
@@ -40,7 +40,7 @@ uv run mypy rlm               # Type check
 The system uses two distinct LLM roles:
 
 1. **Root LM** (`root_model`) - Orchestrator that plans and coordinates extraction. Always text-based, never sees document content directly.
-2. **Worker LM** (`worker_text_model`, `worker_vision_model`) - Performs actual extraction from document chunks. Switches between text and vision models based on input modality.
+2. **Worker LM** (`worker_text_model`) - Performs actual extraction from text document chunks.
 
 ### Extraction Flow
 
@@ -48,25 +48,31 @@ The system uses two distinct LLM roles:
 JSON Schema → YAML (internal) → Worker LM
 Document → Chunking (2000 chars) → Parallel First Pass
           ↓
-Root LM analyzes results → Directs re-extraction of specific chunks
+Workers extract entity contexts (field_name: description)
           ↓
-Aggregation → YAML → JSON → Return + failures
+Root LM analyzes contexts → Directs re-extraction of specific chunks
+          ↓
+Root LM extracts final values from contexts → JSON → Return + failures
 ```
 
 ### Key Modules
 
-- `rlm/config.py` - `RLMConfig` with preset functions: `openai_config()`, `anthropic_config()`, `cost_optimized_config()`, `quality_config()`
-- `rlm/extract/extractor.py` - `RLMExtractor` main orchestrator
-- `rlm/extract/chunker.py` - Strategy pattern for document chunking (text, PDF, images)
-- `rlm/repl.py` - Sandboxed Python execution environment for LLM code generation
-- `rlm/signatures.py` - DSPy signatures defining LM interfaces
+- `rlm_extractor/config.py` - `RLMConfig` configuration class
+- `rlm_extractor/extract/extractor.py` - `RLMExtractor` main orchestrator
+- `rlm_extractor/extract/chunker.py` - Strategy pattern for document chunking (text, PDF)
+- `rlm_extractor/extract/processor.py` - Parallel/sequential chunk processing with exponential backoff retry
+- `rlm_extractor/extract/schema.py` - JSON ↔ YAML schema conversion
+- `rlm_extractor/repl.py` - `REPLState` for persistent state management across RLM turns
+- `rlm_extractor/logger.py` - `CallLogger` for LLM call tracking (JSON Lines format)
+- `rlm_extractor/signatures.py` - DSPy signatures defining LM interfaces
 
 ### Configuration Patterns
 
-All models use litellm format with provider prefix: `openai/gpt-4o`, `anthropic/claude-sonnet-4`
+All models use litellm format with provider prefix: `openai/gpt-4o`, `anthropic/claude-sonnet-4`, `openrouter/anthropic/claude-sonnet-4`
 
 DSPy automatically reads API keys from environment variables. Configure via `.env` file:
 ```
+OPENROUTER_API_KEY=sk-or-...
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 ```
@@ -79,11 +85,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ## Known Issues
 
-See `issues.md` for details. The main high-severity item is memory risk with large image documents (base64 encoding can cause exhaustion with 100+ 4K images).
+See `issues.md` for details.
 
 ## Adding Model Support
 
 When adding support for new models:
-1. Add a preset function to `rlm/config.py` following the existing pattern
-2. Use litellm model format with provider prefix
-3. Ensure vision-capable models are used for `worker_vision_model`
+1. Use litellm model format with provider prefix (e.g., `provider/model-name`)
+2. Users specify models directly when creating `RLMConfig` or calling `extract()`
