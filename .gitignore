@@ -27,8 +27,6 @@ share/python-wheels/
 MANIFEST
 issues.md
 CLAUDE.md
-run_luxical.py
-sample_data/
 *.json
 *.jsonl
 tmpclaude*
