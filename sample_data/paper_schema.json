@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProductIdeasFromPaper",
+  "description": "Extract product implementation ideas grounded in research paper findings.",
+  "type": "object",
+  "required": ["paper_summary", "product_implementation_ideas"],
+  "properties": {
+    "paper_summary": {
+      "type": "object",
+      "description": "Brief context about the paper - enough to ground the product ideas.",
+      "properties": {
+        "title": { "type": "string" },
+        "core_problem": { "type": "string", "description": "What problem does the paper solve?" },
+        "key_solution": { "type": "string", "description": "What approach/technique does the paper propose?" },
+        "proven_results": { "type": "string", "description": "What did the paper actually demonstrate or validate?" }
+      }
+    },
+    "product_implementation_ideas": {
+      "type": "array",
+      "description": "Product or feature ideas derived from the paper's findings, with grounding evidence.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "idea_name": { "type": "string", "description": "Concise name for the product/feature idea." },
+          "description": { "type": "string", "description": "Brief description of what the product does." },
+          "target_users": { "type": "string", "description": "Who would use this product (persona, industry, use case)." },
+          "grounding_in_paper": {
+            "type": "string",
+            "description": "Specific evidence from the paper that supports this idea (cited findings, proven mechanisms, validated approaches)."
+          },
+          "implementation_roadmap": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Key implementation steps, ordered by priority. Reference specific techniques/algorithms from the paper where applicable."
+          },
+          "technical_requirements": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Key technical components needed (e.g., 'Transformer encoder', 'Vector database', 'Real-time inference pipeline')."
+          },
+          "feasibility_assessment": {
+            "type": "object",
+            "properties": {
+              "complexity": { "type": "string", "enum": ["Low", "Medium", "High", "Very High"], "description": "Implementation complexity based on paper's technical depth." },
+              "data_requirements": { "type": "string", "description": "Data needs as inferred from the paper's methodology." },
+              "computational_cost": { "type": "string", "description": "Compute requirements based on paper's resource analysis." },
+              "risk_factors": { "type": "array", "items": { "type": "string" }, "description": "Potential risks or limitations cited in the paper." }
+            }
+          },
+          "unfair_advantage": {
+            "type": "string",
+            "description": "What unique edge this idea has based on the paper's novel contributions vs. existing solutions."
+          },
+          "validation_strategy": {
+            "type": "string",
+            "description": "How to validate this idea, referencing the paper's evaluation methodology."
+          }
+        },
+        "required": ["idea_name", "description", "target_users", "grounding_in_paper"]
+      }
+    }
+  }
+}
