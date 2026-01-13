@@ -26,9 +26,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 issues.md
-CLAUDE.md
-*.json
-*.jsonl
+# CLAUDE.md
+# *.json
+# *.jsonl
 tmpclaude*
 
 # PyInstaller
